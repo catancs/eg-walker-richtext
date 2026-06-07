@@ -421,7 +421,14 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     const kind: ItemKind = op.type === 'ins' ? 'text' : op.type
     const side: Side | null =
       op.type === 'markStart' || op.type === 'markEnd' ? op.side
-      : op.type === 'blockBoundary' ? 'before'      // ¶ is right-sticky (spec §4.3)
+      // ¶ is RIGHT-sticky ('before') for PLACEMENT: a blockBoundary is a plain
+      // FugueMax anchor and text inserts never try to skip past it. This keeps
+      // placement a pure function of the prepare version (the 'after'-skip
+      // interacts non-deterministically with integrate() under concurrency).
+      // The v1 "text at a boundary lands in the FOLLOWING block" semantic and
+      // paragraph-start mark inheritance are BOTH delivered purely at
+      // resolution (resolve.ts), order-independently.
+      : op.type === 'blockBoundary' ? 'before'
       : null
 
     const cursor = findByCurPos(ctx, op.pos)
@@ -434,56 +441,27 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     //
     // This loop is the SOLE enforcement point for expand semantics: which side
     // an anchor carries comes from markPolicy(markType).endSide (see the Side
-    // doc comment above + mark-config.ts). Bold's markEnd is 'before' so text
-    // typed at the span end lands inside (bold grows); link's is 'after' so it
-    // lands outside.
+    // doc comment above + mark-config.ts) for marks, and is fixed 'after'
+    // (left-sticky) for blockBoundary. Bold's markEnd is 'before' so text typed
+    // at the span end lands inside (bold grows); link's is 'after' so it lands
+    // outside. A blockBoundary is 'after' so text typed at a boundary position
+    // skips past it into the FOLLOWING block.
     //
-    // Paragraph-start exception (design spec §4.2, Peritext §3.3): a char typed
-    // at the START of a block (i.e. into the zero-width anchor cluster that
-    // contains a live blockBoundary) must land INSIDE spans that open at the
-    // block start, so it inherits the following char's expanding marks - the
-    // preceding char lives in the previous block and must not lend its marks.
-    // To achieve that we skip TEXT inserts past the *entire* cluster (every
-    // right-sticky markStart AND the boundary), not just left-sticky anchors.
-    //
-    // We must detect the boundary up front rather than flip a flag as we walk:
-    // markStart vs blockBoundary document order is NOT semantically stable - it
-    // is just op-creation order (split-then-mark yields markStart-before-bound,
-    // mark-then-split the reverse). A left-looking / walk-and-flip rule would
-    // therefore be order-dependent. Scanning the cluster keeps the rule
-    // deterministic on item metadata only (kind/side/curState - replay-safe)
-    // and independent of that incidental ordering.
-    //
-    // The cluster is the run of live zero-width anchors at the cursor, bounded
-    // by the next live (Inserted) text item - the first char of the position.
-    // (We only look at live anchors / stop at the first live char, mirroring
-    // the skip loop below, so the two stay consistent.)
-    //
-    // Cost note: the scan steps over tombstoned text, so its worst case is
-    // O(tombstone run length) at the insert position, not O(anchor cluster).
-    // Accepted for this reference implementation; an optimized port would
-    // index over tombstone runs anyway.
-    let atParagraphStart = false
-    if (kind === 'text') {
-      for (let i = cursor.idx; i < ctx.items.length; i++) {
-        const it = ctx.items[i]
-        if (it.kind === 'text') {
-          if (it.curState === ItemState.Inserted) break     // live char ends cluster
-          else continue                                     // tombstone: zero-width
-        }
-        if (it.curState !== ItemState.Inserted) break        // dead anchor ends cluster
-        if (it.kind === 'blockBoundary') { atParagraphStart = true; break }
-      }
-    }
+    // PURE PLACEMENT (design spec §3): this skip reads only deterministic,
+    // integrate-placed item metadata (kind/side) of LIVE (Inserted) anchors and
+    // breaks on the first NotYetInserted item or live text. originLeft/
+    // rightParent are therefore a pure function of the op's prepare version,
+    // never of the replica-local order in which concurrent not-yet-inserted
+    // items happen to be materialised. Order-dependent paragraph-start MARK
+    // inheritance lives entirely in the pure resolution function
+    // (resolve.ts extendStartForParagraph), NOT here.
     while (cursor.idx < ctx.items.length) {
       const it = ctx.items[cursor.idx]
-      // Skip left-sticky ('after') anchors always; at a paragraph start also
-      // skip right-sticky markStarts and the boundary so text lands inside the
-      // spans that open at the block start. Stop at the first right-sticky
-      // anchor / live text / dead anchor otherwise.
+      // Skip left-sticky ('after') anchors (markEnd of non-expanding marks).
+      // Stop at the first right-sticky ('before') anchor, live text, or any
+      // not-yet-inserted item.
       const skip = it.kind !== 'text' && it.curState === ItemState.Inserted
-        && (it.side === 'after'
-            || (atParagraphStart && (it.kind === 'markStart' || it.kind === 'blockBoundary')))
+        && it.side === 'after'
       if (!skip) break
       cursor.endPos += itemWidth(it.endState, it.kind)     // 0; kept for uniformity
       cursor.idx++
