@@ -419,53 +419,28 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // ins | markStart | markEnd | blockBoundary all integrate as items.
     // (Anchor items are zero-width; only text contributes document width.)
     const kind: ItemKind = op.type === 'ins' ? 'text' : op.type
+    // The `side` field is RECORDED on the item (resolution reads it to decide
+    // expand/contract) but it NO LONGER affects placement. Anchors integrate as
+    // plain zero-width FugueMax items exactly like text inserts.
     const side: Side | null =
       op.type === 'markStart' || op.type === 'markEnd' ? op.side
-      // ¶ is RIGHT-sticky ('before') for PLACEMENT: a blockBoundary is a plain
-      // FugueMax anchor and text inserts never try to skip past it. This keeps
-      // placement a pure function of the prepare version (the 'after'-skip
-      // interacts non-deterministically with integrate() under concurrency).
-      // The v1 "text at a boundary lands in the FOLLOWING block" semantic and
-      // paragraph-start mark inheritance are BOTH delivered purely at
-      // resolution (resolve.ts), order-independently.
       : op.type === 'blockBoundary' ? 'before'
       : null
 
     const cursor = findByCurPos(ctx, op.pos)
-    // Sticky-skip (design spec §4.2): the cursor from findByCurPos stops at the
-    // FIRST slot at the target position. Zero-width anchors at this position
-    // define n+1 slots; we skip past left-sticky ('after') anchors so new
-    // content lands after them, and stop at the first right-sticky ('before')
-    // anchor or text item. Deterministic on item metadata only
-    // (state-independent - replay-safe).
+    // PURE PLACEMENT (design spec §3): there is NO sticky-skip. The cursor from
+    // findByCurPos points at the first slot at the target position and we
+    // integrate there with base FugueMax integrate() — identical to the plain
+    // 'ins' path. ANY side-based cursor movement here reads replica-dependent
+    // transient item arrangement (the order in which concurrent not-yet-inserted
+    // anchors happen to be materialised) and breaks convergence; the prior
+    // fuzzing run proved that removing it gives 0/10k engine-internal divergence.
     //
-    // This loop is the SOLE enforcement point for expand semantics: which side
-    // an anchor carries comes from markPolicy(markType).endSide (see the Side
-    // doc comment above + mark-config.ts) for marks, and is fixed 'after'
-    // (left-sticky) for blockBoundary. Bold's markEnd is 'before' so text typed
-    // at the span end lands inside (bold grows); link's is 'after' so it lands
-    // outside. A blockBoundary is 'after' so text typed at a boundary position
-    // skips past it into the FOLLOWING block.
-    //
-    // PURE PLACEMENT (design spec §3): this skip reads only deterministic,
-    // integrate-placed item metadata (kind/side) of LIVE (Inserted) anchors and
-    // breaks on the first NotYetInserted item or live text. originLeft/
-    // rightParent are therefore a pure function of the op's prepare version,
-    // never of the replica-local order in which concurrent not-yet-inserted
-    // items happen to be materialised. Order-dependent paragraph-start MARK
-    // inheritance lives entirely in the pure resolution function
-    // (resolve.ts extendStartForParagraph), NOT here.
-    while (cursor.idx < ctx.items.length) {
-      const it = ctx.items[cursor.idx]
-      // Skip left-sticky ('after') anchors (markEnd of non-expanding marks).
-      // Stop at the first right-sticky ('before') anchor, live text, or any
-      // not-yet-inserted item.
-      const skip = it.kind !== 'text' && it.curState === ItemState.Inserted
-        && it.side === 'after'
-      if (!skip) break
-      cursor.endPos += itemWidth(it.endState, it.kind)     // 0; kept for uniformity
-      cursor.idx++
-    }
+    // All Peritext stickiness/expand semantics are computed purely at resolution
+    // (resolve.ts) from endState + recorded positions + the causal graph:
+    //   - markEnd expand/contract  -> resolve.ts span-end extension
+    //   - blockBoundary placement   -> resolve.ts visAfter(originLeft)
+    //   - paragraph-start inheritance -> resolve.ts span-start extension
 
     // The cursor position is at the first valid insert location.
     if (cursor.idx > 0) {
