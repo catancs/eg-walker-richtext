@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createOpLog, localInsert, localDelete, localMark, localSplitBlock, mergeOplogInto,
-  checkoutSimpleString, checkoutWithItems,
+  checkoutSimpleString, checkoutWithItems, ItemState, type ListOpLog,
 } from '../src/index.js'
 
 test('anchors do not perturb text', () => {
@@ -45,9 +45,9 @@ test('delete skips anchors and deletes text', () => {
 
 // --- Task 3: sticky-skip insertion (expand semantics) ---
 
-const kinds = (o: any) => checkoutWithItems(o).items
-  .filter((i: any) => i.curState === 0 /* Inserted */)
-  .map((i: any) => i.kind === 'text' ? 't' : i.kind)
+const kinds = (o: ListOpLog<string>) => checkoutWithItems(o).items
+  .filter(i => i.curState === ItemState.Inserted)
+  .map(i => i.kind === 'text' ? 't' : i.kind)
 
 test('typing at end of bold span lands INSIDE (endSide before = right-sticky)', () => {
   const o = createOpLog<string>()
