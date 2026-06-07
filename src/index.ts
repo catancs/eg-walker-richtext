@@ -27,8 +27,22 @@ function assertEq<T>(a: T, b: T, msg?: string) {
 }
 
 /**
- * Operations either insert new content at some position (index), or delete the item
- * at some position.
+ * Side controls anchor stickiness at insertion (design spec §4.2):
+ * - 'before' = right-sticky: text inserted at the anchor's position stops
+ *   BEFORE the anchor (anchor stays after the new text).
+ * - 'after'  = left-sticky: insertion skips PAST the anchor (anchor stays
+ *   before the new text).
+ *
+ * Who sets it: markStart.side is always 'before' (right-sticky); markEnd.side
+ * is populated from markPolicy(markType).endSide at op-creation time (see
+ * mark-config.ts). The two must agree with the policy table.
+ */
+export type Side = 'before' | 'after'
+
+/**
+ * Operations insert new content at some position (index), delete the item
+ * at some position, open/close a zero-width mark-span anchor, or insert a
+ * flat block separator.
  *
  * Note the positions are normal array / string indexes, indexing into what the
  * document looked like when the operation was created (at its parent version).
@@ -36,15 +50,6 @@ function assertEq<T>(a: T, b: T, msg?: string) {
  * Operations also have an ID (agent,seq pair) and a list of parent versions. In this
  * implementation, the ID and parents are stored separately - in the causal graph.
 */
-/**
- * Side controls anchor stickiness at insertion (design spec §4.2):
- * - 'before' = right-sticky: text inserted at the anchor's position stops
- *   BEFORE the anchor (anchor stays after the new text).
- * - 'after'  = left-sticky: insertion skips PAST the anchor (anchor stays
- *   before the new text).
- */
-export type Side = 'before' | 'after'
-
 export type ListOp<T = any> = {
   type: 'ins', pos: number, content: T
 } | {
@@ -54,7 +59,7 @@ export type ListOp<T = any> = {
   type: 'markStart', pos: number, side: Side, markType: string, value?: any
 } | {
   // Zero-width anchor closing a span. startId references the matching
-  // markStart by RAW version (agent,seq) — stable across replicas (LVs are
+  // markStart by RAW version (agent,seq) - stable across replicas (LVs are
   // replica-local and MUST NOT appear inside ops).
   type: 'markEnd', pos: number, side: Side, markType: string,
   startId: [agent: string, seq: number]
