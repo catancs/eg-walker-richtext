@@ -16,6 +16,7 @@
 // The causal graph library is used for its graph manipulation helper functions -
 // like diff and iterVersionsBetween.
 import * as causalGraph from "./causal-graph.js"
+import { markPolicy } from './mark-config.js'
 
 // ** A couple utility methods **
 function assert(expr: boolean, msg?: string): asserts expr {
@@ -105,6 +106,25 @@ export function localDelete<T>(oplog: ListOpLog<T>, agent: string, pos: number, 
   }
 }
 
+/** Mark [start, end) with markType/value. value === null clears the mark
+ *  over the range (negation - resolution LWW decides, design spec §5). */
+export function localMark<T>(oplog: ListOpLog<T>, agent: string,
+    start: number, end: number, markType: string, value: any = true,
+    endSide?: Side) {
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq + 2, oplog.cg.heads)
+  oplog.ops.push({ type: 'markStart', pos: start, side: 'before', markType, value })
+  oplog.ops.push({ type: 'markEnd', pos: end, side: endSide ?? markPolicy(markType).endSide,
+    markType, startId: [agent, seq] })
+}
+
+export function localSplitBlock<T>(oplog: ListOpLog<T>, agent: string,
+    pos: number, blockType: string = 'paragraph') {
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq + 1, oplog.cg.heads)
+  oplog.ops.push({ type: 'blockBoundary', pos, blockType })
+}
+
 /** Add an operation to the oplog. Content is required if the operation is an insert. */
 export function pushOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion, parents: causalGraph.RawVersion[], type: 'ins' | 'del', pos: number, content?: T): boolean {
   const entry = causalGraph.addRaw(oplog.cg, id, 1, parents)
@@ -153,14 +173,14 @@ export function mergeOplogInto<T>(dest: ListOpLog<T>, src: ListOpLog<T>) {
 
 // *** Merging changes ***
 
-enum ItemState {
+export enum ItemState {
   NotYetInserted = -1,
   Inserted = 0,
   Deleted = 1, // Or some +ive number of times the item has been deleted.
 }
 
-// This is internal only, and used while reconstructing the changes.
-interface Item {
+// Exported for resolve.ts (Task 4) and tests. Used while reconstructing the changes.
+export interface Item {
   opId: number,
 
   // What sort of thing this item is. 'text' contributes width; anchors don't.
@@ -371,7 +391,8 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // Find the next item which we can actually delete.
     // This will crash if we fall off the end of the items list. Thats ok - that means
     // the data is invalid or we've messed something up somewhere.
-    while (ctx.items[cursor.idx].curState !== ItemState.Inserted) {
+    while (ctx.items[cursor.idx].curState !== ItemState.Inserted
+        || ctx.items[cursor.idx].kind !== 'text') {
       const item = ctx.items[cursor.idx]
       cursor.endPos += itemWidth(item.endState, item.kind)
       cursor.idx++
@@ -394,9 +415,18 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
 
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[opId] = item.opId
-  } else if (op.type === 'ins') {
-    // Insert! This is much more complicated as we need to do the Yjs integration.
+  } else {
+    // ins | markStart | markEnd | blockBoundary all integrate as items.
+    // (Anchor items are zero-width; only text contributes document width.)
+    const kind: ItemKind = op.type === 'ins' ? 'text' : op.type
+    const side: Side | null =
+      op.type === 'markStart' || op.type === 'markEnd' ? op.side
+      : op.type === 'blockBoundary' ? 'before'      // ¶ is right-sticky (spec §4.3)
+      : null
+
     const cursor = findByCurPos(ctx, op.pos)
+    // (sticky-skip rule will be inserted here in Task 3 — do NOT add it now)
+
     // The cursor position is at the first valid insert location.
     if (cursor.idx > 0) {
       // Its valid because the previous item must be inserted in the current state.
@@ -425,8 +455,8 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
 
     const newItem: Item = {
-      kind: 'text',
-      side: null,
+      kind,
+      side,
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
       opId: opId,
@@ -441,7 +471,8 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     ctx.items.splice(cursor.idx, 0, newItem)
 
     // And finally, actually insert it in the resulting document.
-    if (snapshot) snapshot.splice(cursor.endPos, 0, op.content!)
+    // Only text appears in the materialized snapshot.
+    if (snapshot && kind === 'text') snapshot.splice(cursor.endPos, 0, (op as any).content)
   }
 }
 
@@ -572,6 +603,22 @@ export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
     snapshot,
     version: oplog.cg.heads.slice()
   }
+}
+
+/** Test/resolution hook — same as checkout but also returns the context's
+ *  items (including zero-width anchors). Consumed by resolve.ts (Task 4)
+ *  and the anchor tests. */
+export function checkoutWithItems<T>(oplog: ListOpLog<T>):
+    { snapshot: T[], items: Item[], version: number[] } {
+  const ctx: EditContext = {
+    items: [],
+    delTargets: new Array(oplog.ops.length).fill(-1),
+    itemsByLV: new Array(oplog.ops.length).fill(null),
+    curVersion: [],
+  }
+  const snapshot: T[] = []
+  traverseAndApply(ctx, oplog, snapshot)
+  return { snapshot, items: ctx.items, version: oplog.cg.heads.slice() }
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
