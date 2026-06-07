@@ -327,10 +327,14 @@ export class SimpleRichDoc {
           spans.push({ start: s.start, end: s.end, markType: t, value: s.value })
         continue
       }
-      // LWW per-position winner, folded in document order of the END anchor
-      // (foldKey), tie-broken by (agent,seq). See FOLD ORDER note at top.
+      // LWW per-position winner, folded in the CANONICAL order shared with the
+      // engine (resolve.ts): resolved (start, end) then the RAW (agent,seq) of
+      // the markStart. This is fully replica-independent and reproducible on
+      // both sides, so the intransitive-triple winner is identical. (Replaces
+      // the old end-anchor foldKey, which could disagree with the engine's
+      // fold order on 3+-concurrent same-type conflicts.)
       const sorted = ofType.slice().sort((x, y) =>
-        x.foldKey - y.foldKey || this.cmpRaw(x.id, y.id))
+        x.start - y.start || x.end - y.end || this.cmpRaw(x.id, y.id))
       const winner: (RawSpan | null)[] = new Array(textLen).fill(null)
       for (const s of sorted)
         for (let p = s.start; p < s.end; p++)
@@ -347,8 +351,13 @@ export class SimpleRichDoc {
         if (runStart < 0 && v !== undefined) { runStart = p; runVal = v }
       }
     }
+    // Canonical span order — value JSON tie-break for multi spans sharing
+    // start/end/markType. Mirrors resolve.ts exactly (deterministic order).
+    const vkey = (v: any) => JSON.stringify(v ?? null)
     spans.sort((x, y) =>
-      x.start - y.start || x.end - y.end || (x.markType < y.markType ? -1 : 1))
+      x.start - y.start || x.end - y.end
+      || (x.markType < y.markType ? -1 : x.markType > y.markType ? 1 : 0)
+      || (vkey(x.value) < vkey(y.value) ? -1 : vkey(x.value) > vkey(y.value) ? 1 : 0))
 
     // ----- blocks -----
     const byPos = new Map<number, { id: OpId; blockType: string }>()
