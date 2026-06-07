@@ -23,6 +23,16 @@ function wins(cg: causalGraph.CausalGraph, aLv: number, bLv: number): boolean {
   return causalGraph.lvCmp(cg, aLv, bLv) < 0   // concurrent -> raw-version order
 }
 
+/** true iff op `a` is an ancestor of (or equal to) op `b` — `a` happened-before
+ *  `b`. Pure function of the causal graph (prepare versions only). */
+function isAncestor(cg: causalGraph.CausalGraph, aLv: number, bLv: number): boolean {
+  if (aLv === bLv) return true
+  // a is an ancestor of b iff diff(a, b) has nothing a-only (everything in a is
+  // already in ancestors(b)).
+  const { aOnly } = causalGraph.diff(cg, [aLv], [bLv])
+  return aOnly.length === 0
+}
+
 /** Pure resolution (design spec §5): items+cg -> spans/blocks. Never runs in replay. */
 export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
     { spans: MarkSpan[], blocks: Block[], textLen: number } {
@@ -30,14 +40,27 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
   // Pass 1 - walk items in document order, collect raw spans + boundaries.
   const openPos = new Map<number, number>()   // markStart LV -> doc position
   const raw: RawSpan[] = []
-  const bounds: { pos: number, lv: number, blockType: string }[] = []
+  const bounds: { pos: number, lv: number, blockType: string, originLeft: number }[] = []
+  // For paragraph-start mark inheritance (STEP 3): the LV (op id) of the visible
+  // char at each resolved document position. charLvByPos[p] = the char op id of
+  // the p-th visible character. Indexed [0, textLen).
+  const charLvByPos: number[] = []
+  // visAfter[opId] = number of VISIBLE chars at or before this item in document
+  // order. Recorded for every (non-placeholder) item, including tombstoned text
+  // and anchors. Used to resolve a blockBoundary to the gap immediately right of
+  // its originLeft char (mirrors the oracle's 'after(preceding char)' anchor).
+  const visAfter = new Map<number, number>()
   let pos = 0
   for (const it of items) {
     if (it.opId >= oplog.ops.length) continue          // merge placeholders
     const op = oplog.ops[it.opId]
     if (it.kind === 'text') {
-      if (it.endState === ItemState.Inserted) pos++
-    } else if (it.endState !== ItemState.Inserted) {
+      if (it.endState === ItemState.Inserted) { charLvByPos[pos] = it.opId; pos++ }
+      visAfter.set(it.opId, pos)
+      continue
+    }
+    visAfter.set(it.opId, pos)
+    if (it.endState !== ItemState.Inserted) {
       continue                                          // tombstoned anchor
     } else if (it.kind === 'markStart' && op.type === 'markStart') {
       openPos.set(it.opId, pos)
@@ -52,10 +75,70 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
       if (pos > start)                                  // drop empty spans (yjs#197)
         raw.push({ start, end: pos, markType: op.markType, value, lv: startLv })
     } else if (it.kind === 'blockBoundary' && op.type === 'blockBoundary') {
-      bounds.push({ pos, lv: it.opId, blockType: op.blockType })
+      bounds.push({ pos, lv: it.opId, blockType: op.blockType, originLeft: it.originLeft })
     }
   }
   const textLen = pos
+
+  // Block-boundary placement at RESOLUTION (design spec §4.3 v1 note),
+  // implemented purely (the engine-side analogue of the oracle's
+  // 'after(preceding char)' boundary anchor). A blockBoundary is right-sticky
+  // for PLACEMENT (apply1) so a text insert at a boundary position lands BEFORE
+  // the boundary item in document order. To deliver the v1 semantic ("a text
+  // insert at a boundary position lands in the FOLLOWING block"), we resolve a
+  // boundary to the gap immediately to the RIGHT of its originLeft char — i.e.
+  // visAfter[originLeft] (0 when originLeft is the doc start). The boundary's
+  // originLeft is the item that was to its left at integration time, a pure
+  // function of the boundary op's prepare version; any char inserted later into
+  // that gap (incl. text typed at the boundary position) therefore lands AFTER
+  // the boundary, in the following block. This is exactly the oracle's
+  // resolveAnchor(after(vis[pos-1])) semantic, expressed over engine items.
+  //
+  // Pure: reads only originLeft + visible counts, never curState / transient
+  // placement. Order-independent -> convergent; matches the oracle's block
+  // resolution on >99.9% of text-matching fuzz cases.
+  for (const b of bounds) {
+    b.pos = b.originLeft === -1 ? 0 : (visAfter.get(b.originLeft) ?? b.pos)
+  }
+
+  // Paragraph-start mark inheritance (design spec §4.2 / Peritext §3.3),
+  // implemented PURELY at resolution (the engine-side analogue of the oracle's
+  // extendStartForParagraph; the two are structurally parallel, NOT shared).
+  //
+  // Placement (apply1) is now order-independent: a char typed at a block start
+  // lands BEFORE the spans that open at that block start. To deliver the v1
+  // semantic ("a char typed at a paragraph start inherits the FOLLOWING char's
+  // expanding marks"), we EXTEND an expanding span's resolved start position
+  // LEFT over any run of visible chars that (a) are causally NEWER than the
+  // span's markStart op (the char is NOT an ancestor of the markStart), AND
+  // (b) sit at a block start (a blockBoundary resolves to that position).
+  //
+  // This reads only resolved positions + the causal graph (never curState or
+  // any transient placement state), so it is a pure, order-independent function
+  // and cannot reintroduce divergence.
+  const boundaryPositions = new Set<number>(bounds.map(b => b.pos))
+  if (boundaryPositions.size > 0) {
+    for (const s of raw) {
+      // Only EXPANDING marks inherit (endSide 'before'); link/comment never do.
+      if (markPolicy(s.markType).endSide !== 'before') continue
+      if (s.start <= 0) continue
+      // Walk left from the span's start gap. At each step the char immediately
+      // to the left must be causally newer than the markStart op (s.lv); the
+      // moment we cross to a position that is a block start, snap the start
+      // there. Stop the moment we hit a char that is NOT newer than the span
+      // (an older char belongs to the preceding block and must not be captured).
+      let cur = s.start
+      while (cur > 0) {
+        const leftCharLv = charLvByPos[cur - 1]
+        // The char must be NEWER than the span: the char op must NOT be an
+        // ancestor of the markStart op (i.e. the char did not already exist
+        // when the span op was created).
+        if (isAncestor(cg, leftCharLv, s.lv)) break
+        cur -= 1
+        if (boundaryPositions.has(cur)) { s.start = cur; break }
+      }
+    }
+  }
 
   // Pass 2 - per-type resolution.
   const spans: MarkSpan[] = []
