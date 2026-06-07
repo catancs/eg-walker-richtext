@@ -436,13 +436,52 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // an anchor carries comes from markPolicy(markType).endSide (see the Side
     // doc comment above + mark-config.ts). Bold's markEnd is 'before' so text
     // typed at the span end lands inside (bold grows); link's is 'after' so it
-    // lands outside. Task 6 extends this loop with a paragraph-start exception.
+    // lands outside.
+    //
+    // Paragraph-start exception (design spec §4.2, Peritext §3.3): a char typed
+    // at the START of a block (i.e. into the zero-width anchor cluster that
+    // contains a live blockBoundary) must land INSIDE spans that open at the
+    // block start, so it inherits the following char's expanding marks - the
+    // preceding char lives in the previous block and must not lend its marks.
+    // To achieve that we skip TEXT inserts past the *entire* cluster (every
+    // right-sticky markStart AND the boundary), not just left-sticky anchors.
+    //
+    // We must detect the boundary up front rather than flip a flag as we walk:
+    // markStart vs blockBoundary document order is NOT semantically stable - it
+    // is just op-creation order (split-then-mark yields markStart-before-bound,
+    // mark-then-split the reverse). A left-looking / walk-and-flip rule would
+    // therefore be order-dependent. Scanning the cluster keeps the rule
+    // deterministic on item metadata only (kind/side/curState - replay-safe)
+    // and independent of that incidental ordering.
+    //
+    // The cluster is the run of live zero-width anchors at the cursor, bounded
+    // by the next live (Inserted) text item - the first char of the position.
+    // (We only look at live anchors / stop at the first live char, mirroring
+    // the skip loop below, so the two stay consistent.)
+    let atParagraphStart = false
+    if (kind === 'text') {
+      for (let i = cursor.idx; i < ctx.items.length; i++) {
+        const it = ctx.items[i]
+        if (it.kind === 'text') {
+          if (it.curState === ItemState.Inserted) break     // live char ends cluster
+          else continue                                     // tombstone: zero-width
+        }
+        if (it.curState !== ItemState.Inserted) break        // dead anchor ends cluster
+        if (it.kind === 'blockBoundary') { atParagraphStart = true; break }
+      }
+    }
     while (cursor.idx < ctx.items.length) {
       const it = ctx.items[cursor.idx]
-      if (it.kind !== 'text' && it.curState === ItemState.Inserted && it.side === 'after') {
-        cursor.endPos += itemWidth(it.endState, it.kind)   // 0; kept for uniformity
-        cursor.idx++
-      } else break
+      // Skip left-sticky ('after') anchors always; at a paragraph start also
+      // skip right-sticky markStarts and the boundary so text lands inside the
+      // spans that open at the block start. Stop at the first right-sticky
+      // anchor / live text / dead anchor otherwise.
+      const skip = it.kind !== 'text' && it.curState === ItemState.Inserted
+        && (it.side === 'after'
+            || (atParagraphStart && (it.kind === 'markStart' || it.kind === 'blockBoundary')))
+      if (!skip) break
+      cursor.endPos += itemWidth(it.endState, it.kind)     // 0; kept for uniformity
+      cursor.idx++
     }
 
     // The cursor position is at the first valid insert location.
