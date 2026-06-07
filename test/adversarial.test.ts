@@ -108,3 +108,16 @@ test('peritext_example4_color_lww', () => {
   assert.equal(ca.length, 1)
   assert.equal(ca[0].value, 'blue')   // tie-break by (agent,seq): 'b' > 'a'
 })
+
+// inkandswitch/peritext#32: a tombstoned span (all its text deleted) must
+// not capture newly inserted text at its position.
+test('peritext_issue32_tombstone_capture', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'AB')
+  localMark(o, 'o', 0, 1, 'bold', true)   // bold "A"
+  localDelete(o, 'o', 0, 1)               // delete "A" - span now empty
+  localInsert(o, 'o', 0, 'X')             // type where A was
+  const snap = checkoutRich(o)
+  assert.equal(snap.text.join(''), 'XB')
+  assert.deepEqual(snap.spans, [], 'dead bold must not capture X')
+})
