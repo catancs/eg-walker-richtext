@@ -164,6 +164,14 @@ implicit boundaries). Consequences, all inherited from sequence semantics:
 - Block *type* changes (paragraph → heading) are `blockType` values resolved
   LWW by causal order at resolution. v1 has no nesting (no lists-in-lists);
   nesting is deferred (§9).
+- **v1 boundary-insert semantics (amended during implementation):** a text
+  insert at a boundary position always lands at the start of the FOLLOWING
+  block — with or without marks present. The boundary index is inherently
+  ambiguous (end of block N == start of block N+1) and ops carry no cursor
+  affinity, so v1 picks the intuitive side deterministically. This supersedes
+  a naive "¶ is right-sticky for text" reading of the rule above; ¶ remains
+  right-sticky for *anchor* inserts. Pinned by
+  `block_text_insert_at_boundary_lands_in_following_block`.
 
 ## 5. Resolution Semantics (layer 4)
 
