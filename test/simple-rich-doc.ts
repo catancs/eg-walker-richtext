@@ -88,6 +88,13 @@ interface BlockOp {
 interface Ch { ch: string }
 
 // ----- mark policy (mirrors src/mark-config.ts; kept local for independence) -----
+//
+// DRIFT WARNING (load-bearing for the differential fuzzer): this set and the
+// `expandEnd` argument to mark() are the oracle's copy of mark-config.ts. The
+// fuzzer MUST pass expandEnd = (MARK_CONFIG[markType].endSide === 'before') and
+// MULTI_TYPES MUST list every 'multi'-conflict mark type. If either drifts from
+// mark-config.ts, the differential test goes silently INVALID (passes against a
+// wrong oracle) rather than failing red. Keep them in sync by inspection.
 
 const MULTI_TYPES = new Set(['comment'])
 const isMulti = (t: string) => MULTI_TYPES.has(t)
@@ -110,6 +117,9 @@ export class SimpleRichDoc {
     this.parents.set(id, this.frontier.slice())
     this.known.add(id)
     this.frontier = [id]   // a local linear op dominates the prior frontier
+    // Concurrency only ever arises via merge(): within one replica every op is
+    // causally ordered (each takes the prior frontier as its sole parent), so
+    // the naive hb() walk yields engine-equivalent concurrency.
   }
 
   // transitive happened-before: is `a` an ancestor of (or equal to) `b`?
@@ -150,11 +160,20 @@ export class SimpleRichDoc {
 
   // Walk fugue items (linked list) in document order INCLUDING tombstones.
   // Returns array of { id, ch, deleted } in order.
+  //
+  // FRAGILE COUPLING: this reaches into ListFugueSimple's vendored internals
+  // (.start/.end/.right/.id/.value/.isDeleted) via `as any`. A silent upstream
+  // rename would make chars read as undefined and corrupt every materialization
+  // without an obvious red test, so we assert the two anchor fields exist up
+  // front to fail loudly instead.
   private items(): { id: ID; ch: string; deleted: boolean }[] {
     const out: { id: ID; ch: string; deleted: boolean }[] = []
     // The fugue exposes start/end + linked list via .right; walk it.
-    let elt: any = (this.fugue as any).start.right
-    const end: any = (this.fugue as any).end
+    const f = this.fugue as any
+    if (f.start === undefined || f.end === undefined)
+      throw new Error('SimpleRichDoc: ListFugueSimple internals changed (start/end missing) - update items()')
+    let elt: any = f.start.right
+    const end: any = f.end
     while (elt && elt !== end) {
       out.push({ id: elt.id, ch: elt.value ? elt.value.ch : '', deleted: elt.isDeleted })
       elt = elt.right
@@ -353,9 +372,8 @@ export class SimpleRichDoc {
 
   // Paragraph-start backward extension. Given an expanding span `m` whose start
   // gap resolved to `s`, extend `s` left over any run of visible chars that:
-  //   (a) were inserted AFTER the span op (concurrent or descendant — i.e. the
-  //       span op did NOT happen-before... actually: char op is NOT an ancestor
-  //       of the span op, so the char is "new" relative to the span), and
+  //   (a) the char op is NOT an ancestor of the span op (so the char is "new"
+  //       relative to the span - inserted concurrently with or after it), and
   //   (b) sit at the very start of a block — there is a block boundary that
   //       resolves to a position <= the char's position and there is no visible
   //       char between the boundary and the span's original first char that is
