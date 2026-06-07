@@ -624,7 +624,7 @@ export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
  *  items (including zero-width anchors). Consumed by resolve.ts (Task 4)
  *  and the anchor tests. */
 export function checkoutWithItems<T>(oplog: ListOpLog<T>):
-    { snapshot: T[], items: Item[], version: number[] } {
+    { snapshot: T[], items: Item[], delTargets: number[], version: number[] } {
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
@@ -633,7 +633,10 @@ export function checkoutWithItems<T>(oplog: ListOpLog<T>):
   }
   const snapshot: T[] = []
   traverseAndApply(ctx, oplog, snapshot)
-  return { snapshot, items: ctx.items, version: oplog.cg.heads.slice() }
+  // delTargets[delOpLv] = the LV of the text item that del op tombstoned. Used
+  // by resolve.ts to determine which chars were ALREADY DELETED at a mark op's
+  // creation time (so span-end resolution skips them when finding char[end]).
+  return { snapshot, items: ctx.items, delTargets: ctx.delTargets, version: oplog.cg.heads.slice() }
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
