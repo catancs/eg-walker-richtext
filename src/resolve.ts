@@ -45,9 +45,12 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
       const startLv = causalGraph.rawToLV(cg, op.startId[0], op.startId[1])
       const start = openPos.get(startLv)
       if (start === undefined) continue                 // unmatched (shouldn't happen)
+      // The op at startLv is a markStart by construction (startId resolution);
+      // narrow explicitly rather than cast so a violation surfaces as undefined.
+      const startOp = oplog.ops[startLv]
+      const value = startOp.type === 'markStart' ? startOp.value : undefined
       if (pos > start)                                  // drop empty spans (yjs#197)
-        raw.push({ start, end: pos, markType: op.markType,
-          value: (oplog.ops[startLv] as any).value, lv: startLv })
+        raw.push({ start, end: pos, markType: op.markType, value, lv: startLv })
     } else if (it.kind === 'blockBoundary' && op.type === 'blockBoundary') {
       bounds.push({ pos, lv: it.opId, blockType: op.blockType })
     }
@@ -66,11 +69,24 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
     }
     // LWW: per-position winner by causal order (union emerges naturally).
     // O(spans x textLen) - fine for a reference implementation.
+    //
+    // NOTE (load-bearing for ports + the differential oracle): this pairwise
+    // fold is order-dependent in principle - wins() mixes causal dominance
+    // with an (agent,seq) tie-break, which is not transitive across mixed
+    // dominance/concurrency triples, so with 3+ concurrent same-position
+    // spans the fold's winner can depend on iteration order. It converges
+    // across replicas anyway because ofType inherits Pass 1's item order,
+    // which eg-walker guarantees identical on every replica. Any reimpl
+    // (Rust port, SimpleRichDoc oracle) MUST resolve in the same document
+    // order; the invariant to test is cross-replica convergence, not
+    // equality with an abstract "causally newest" winner.
     const winner: (RawSpan | null)[] = new Array(textLen).fill(null)
     for (const s of ofType)
       for (let p = s.start; p < s.end; p++)
         if (winner[p] === null || wins(cg, winner[p]!.lv, s.lv)) winner[p] = s
     // Coalesce equal-value runs into spans; null value = mark absent.
+    // Sentinel iteration: p === textLen acts as a virtual null that flushes
+    // the trailing run.
     let runStart = -1, runVal: any
     for (let p = 0; p <= textLen; p++) {
       const w = p < textLen ? winner[p] : null
@@ -93,6 +109,9 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
   }
   const cuts = [...byPos.entries()].sort((a, b) => a[0] - b[0])
   const blocks: Block[] = []
+  // 'paragraph' is the implicit doc-start block type; it only survives when
+  // text precedes the first boundary. A boundary AT pos 0 emits no empty
+  // leading block (cut > prev is false) and its type takes over via prevType.
   let prev = 0, prevType = 'paragraph'
   for (const [cut, info] of cuts) {
     if (cut > prev) blocks.push({ start: prev, end: cut, blockType: prevType })

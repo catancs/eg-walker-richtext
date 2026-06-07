@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createOpLog, localInsert, localDelete, localMark, mergeOplogInto } from '../src/index.js'
-import { checkoutRich, type MarkSpan } from '../src/resolve.js'
+import { createOpLog, localInsert, localDelete, localMark, mergeOplogInto, type ListOpLog } from '../src/index.js'
+import { checkoutRich } from '../src/resolve.js'
 
-const spansOf = (o: any, type: string) =>
-  checkoutRich(o).spans.filter((s: MarkSpan) => s.markType === type)
-    .map((s: MarkSpan) => [s.start, s.end])
+const spansOf = (o: ListOpLog<string>, type: string) =>
+  checkoutRich(o).spans.filter(s => s.markType === type)
+    .map(s => [s.start, s.end])
 
 // Peritext CSCW'22 §2.3.2 / Example 2: concurrent overlapping bolds must
 // UNION, not invert. Naive toggle-rendering yields "jumped" unbolded.
