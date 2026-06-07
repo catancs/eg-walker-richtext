@@ -458,6 +458,11 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // by the next live (Inserted) text item - the first char of the position.
     // (We only look at live anchors / stop at the first live char, mirroring
     // the skip loop below, so the two stay consistent.)
+    //
+    // Cost note: the scan steps over tombstoned text, so its worst case is
+    // O(tombstone run length) at the insert position, not O(anchor cluster).
+    // Accepted for this reference implementation; an optimized port would
+    // index over tombstone runs anyway.
     let atParagraphStart = false
     if (kind === 'text') {
       for (let i = cursor.idx; i < ctx.items.length; i++) {
