@@ -42,3 +42,36 @@ test('delete skips anchors and deletes text', () => {
   localDelete(o, 'a', 0, 1)                    // delete 'a' (not an anchor!)
   assert.equal(checkoutSimpleString(o), 'b')
 })
+
+// --- Task 3: sticky-skip insertion (expand semantics) ---
+
+const kinds = (o: any) => checkoutWithItems(o).items
+  .filter((i: any) => i.curState === 0 /* Inserted */)
+  .map((i: any) => i.kind === 'text' ? 't' : i.kind)
+
+test('typing at end of bold span lands INSIDE (endSide before = right-sticky)', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'a', 0, ...'ab')
+  localMark(o, 'a', 0, 2, 'bold', true)   // bold "ab", end anchor right-sticky
+  localInsert(o, 'a', 2, 'X')             // type at boundary
+  // Expected order: markStart a b X markEnd  -> X inside
+  assert.deepEqual(kinds(o), ['markStart', 't', 't', 't', 'markEnd'])
+})
+
+test('typing at end of link span lands OUTSIDE (endSide after = left-sticky)', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'a', 0, ...'ab')
+  localMark(o, 'a', 0, 2, 'link', 'https://x')
+  localInsert(o, 'a', 2, 'X')
+  // Expected: markStart a b markEnd X  -> X outside
+  assert.deepEqual(kinds(o), ['markStart', 't', 't', 'markEnd', 't'])
+})
+
+test('typing at start of bold span lands OUTSIDE (start right-sticky)', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'a', 0, ...'ab')
+  localMark(o, 'a', 0, 2, 'bold', true)
+  localInsert(o, 'a', 0, 'X')
+  // Expected: X markStart a b markEnd
+  assert.deepEqual(kinds(o), ['t', 'markStart', 't', 't', 'markEnd'])
+})

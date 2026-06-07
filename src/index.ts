@@ -425,7 +425,19 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
       : null
 
     const cursor = findByCurPos(ctx, op.pos)
-    // (sticky-skip rule will be inserted here in Task 3 — do NOT add it now)
+    // Sticky-skip (design spec §4.2): the cursor from findByCurPos stops at the
+    // FIRST slot at the target position. Zero-width anchors at this position
+    // define n+1 slots; we skip past left-sticky ('after') anchors so new
+    // content lands after them, and stop at the first right-sticky ('before')
+    // anchor or text item. Deterministic on item metadata only
+    // (state-independent - replay-safe).
+    while (cursor.idx < ctx.items.length) {
+      const it = ctx.items[cursor.idx]
+      if (it.kind !== 'text' && it.curState === ItemState.Inserted && it.side === 'after') {
+        cursor.endPos += itemWidth(it.endState, it.kind)   // 0; kept for uniformity
+        cursor.idx++
+      } else break
+    }
 
     // The cursor position is at the first valid insert location.
     if (cursor.idx > 0) {
