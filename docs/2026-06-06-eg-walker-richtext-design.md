@@ -117,10 +117,13 @@ cannot say which format is newer; ours can).
 ### 4.2 Anchor placement rules
 
 - **`side` encodes expand policy at insertion time.** A `markEnd` with
-  `side:'before'` is left-sticky: text typed at the boundary integrates
-  *inside* the span (bold grows). `side:'after'` is right-sticky: text lands
-  *outside* (links don't grow). Implemented via the anchor item's
-  `originLeft`/`rightParent` at FugueMax integration — zero runtime cost.
+  `side:'before'` is right-sticky (insertion stops BEFORE the anchor, so the
+  anchor stays after the new text): text typed at the boundary integrates
+  *inside* the span (bold grows). `side:'after'` is left-sticky (insertion
+  skips PAST the anchor): text lands *outside* (links don't grow). Labels
+  match the `Side` doc comment in `src/index.ts` (the authoritative
+  convention). Implemented via the insertion-time sticky-skip rule —
+  zero runtime cost.
   Default policy table (Peritext Table 1 / Loro's expand modes):
 
   | markType            | overlap? | expand (end side) |
