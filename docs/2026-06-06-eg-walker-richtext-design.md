@@ -101,7 +101,10 @@ type RichOp<T> =
   | { type: 'markStart', pos: number, side: 'before'|'after',
       markType: string, value?: any }                   // zero-width anchor
   | { type: 'markEnd',   pos: number, side: 'before'|'after',
-      markType: string, startId: LV }                   // pairs to its start
+      markType: string,
+      startId: [agent: string, seq: number] }           // pairs to its start by
+                                                        // RAW version - LVs are
+                                                        // replica-local, never in ops
   | { type: 'blockBoundary', pos: number,
       blockType: string }                               // flat blocks (¶)
 ```
