@@ -11,7 +11,15 @@ export interface RichSnapshot<T = any> {
   version: [agent: string, seq: number][]
 }
 
-interface RawSpan { start: number, end: number, markType: string, value: any, lv: number }
+interface RawSpan {
+  start: number, end: number, markType: string, value: any, lv: number,
+  // markStart op LV + its originLeft item — used to resolve the span START
+  // purely ('before char[start]'). markEnd op LV + its originLeft item — used
+  // to resolve the span END ('before char[end]' expanding / 'after char[end-1]'
+  // non-expanding). See span-boundary semantics below.
+  startLv: number, startOriginLeft: number,
+  endLv: number, endOriginLeft: number,
+}
 
 /** true iff op b wins over op a (b causally newer; (agent,seq) tie-break
  *  for concurrent ops - deterministic across replicas). Design spec §5 rule 2. */
@@ -33,12 +41,38 @@ function isAncestor(cg: causalGraph.CausalGraph, aLv: number, bLv: number): bool
   return aOnly.length === 0
 }
 
-/** Pure resolution (design spec §5): items+cg -> spans/blocks. Never runs in replay. */
-export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
+/** Pure resolution (design spec §5): items+cg -> spans/blocks. Never runs in replay.
+ *  `delTargets` (delOpLv -> tombstoned text LV) lets span-end resolution skip
+ *  chars that were ALREADY DELETED at a mark op's creation time. */
+export function resolve<T>(items: Item[], oplog: ListOpLog<T>, delTargets: number[] = []):
     { spans: MarkSpan[], blocks: Block[], textLen: number } {
   const cg = oplog.cg
+  // Reverse index: text char LV -> list of del op LVs that tombstoned it.
+  // (A char may be deleted concurrently by several ops.) Used to decide whether
+  // a char was visible at a given mark op's creation version.
+  const delsByTarget = new Map<number, number[]>()
+  for (let delLv = 0; delLv < delTargets.length; delLv++) {
+    const target = delTargets[delLv]
+    if (target < 0) continue
+    const arr = delsByTarget.get(target)
+    if (arr) arr.push(delLv); else delsByTarget.set(target, [delLv])
+  }
+  // A char is VISIBLE at op `opLv` iff the char already existed (is an ancestor
+  // of opLv) AND no deletion of it had happened yet (no del op targeting it is
+  // an ancestor of opLv). char[end]/char[start] must be visible-at-op chars.
+  const visibleAtOp = (charLv: number, opLv: number): boolean => {
+    if (!isAncestor(cg, charLv, opLv)) return false
+    const dels = delsByTarget.get(charLv)
+    if (dels) for (const d of dels) if (isAncestor(cg, d, opLv)) return false
+    return true
+  }
   // Pass 1 - walk items in document order, collect raw spans + boundaries.
-  const openPos = new Map<number, number>()   // markStart LV -> doc position
+  // markStart LV -> { originLeft, lv } of the markStart item. The span START is
+  // computed PURELY from this (mirroring the end), not from the markStart item's
+  // own visible position, which is wrong under concurrency (text inserted
+  // between the markStart and char[start] would shift char[start] right while
+  // the markStart item stays put — see the m3-5-376 finding).
+  const openInfo = new Map<number, { originLeft: number, lv: number }>()
   const raw: RawSpan[] = []
   const bounds: { pos: number, lv: number, blockType: string, originLeft: number }[] = []
   // For paragraph-start mark inheritance (STEP 3): the LV (op id) of the visible
@@ -50,11 +84,21 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
   // and anchors. Used to resolve a blockBoundary to the gap immediately right of
   // its originLeft char (mirrors the oracle's 'after(preceding char)' anchor).
   const visAfter = new Map<number, number>()
+  // ALL text items in document order (visible AND tombstoned). For each we keep
+  // its lv and the visible-gap position immediately BEFORE it (= visible char
+  // count seen so far). Used to compute span ends purely: the end anchor walks
+  // this list rightward from char[end-1] (the markEnd op's originLeft) over
+  // text NEWER than the markEnd op, stopping at char[end] — independent of how
+  // FugueMax placed the markEnd item among concurrent boundary text.
+  const textSeq: { lv: number, visBefore: number }[] = []
+  const textIdx = new Map<number, number>()  // text lv -> index in textSeq
   let pos = 0
   for (const it of items) {
     if (it.opId >= oplog.ops.length) continue          // merge placeholders
     const op = oplog.ops[it.opId]
     if (it.kind === 'text') {
+      textIdx.set(it.opId, textSeq.length)
+      textSeq.push({ lv: it.opId, visBefore: pos })
       if (it.endState === ItemState.Inserted) { charLvByPos[pos] = it.opId; pos++ }
       visAfter.set(it.opId, pos)
       continue
@@ -63,22 +107,80 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
     if (it.endState !== ItemState.Inserted) {
       continue                                          // tombstoned anchor
     } else if (it.kind === 'markStart' && op.type === 'markStart') {
-      openPos.set(it.opId, pos)
+      openInfo.set(it.opId, { originLeft: it.originLeft, lv: it.opId })
     } else if (it.kind === 'markEnd' && op.type === 'markEnd') {
       const startLv = causalGraph.rawToLV(cg, op.startId[0], op.startId[1])
-      const start = openPos.get(startLv)
-      if (start === undefined) continue                 // unmatched (shouldn't happen)
+      const info = openInfo.get(startLv)
+      if (info === undefined) continue                  // unmatched (shouldn't happen)
       // The op at startLv is a markStart by construction (startId resolution);
       // narrow explicitly rather than cast so a violation surfaces as undefined.
       const startOp = oplog.ops[startLv]
       const value = startOp.type === 'markStart' ? startOp.value : undefined
-      if (pos > start)                                  // drop empty spans (yjs#197)
-        raw.push({ start, end: pos, markType: op.markType, value, lv: startLv })
+      // NOTE: start/end are PLACEHOLDERS here (the items' own visible positions
+      // are wrong under concurrency). Both are recomputed below from the
+      // markStart/markEnd originLeft + the causal graph. The yjs#197 empty-span
+      // drop also happens AFTER that resolution.
+      raw.push({ start: pos, end: pos, markType: op.markType, value, lv: startLv,
+        endLv: it.opId, endOriginLeft: it.originLeft,
+        startOriginLeft: info.originLeft, startLv })
     } else if (it.kind === 'blockBoundary' && op.type === 'blockBoundary') {
       bounds.push({ pos, lv: it.opId, blockType: op.blockType, originLeft: it.originLeft })
     }
   }
   const textLen = pos
+
+  // Span START/END resolution at RESOLUTION (design spec §5; the engine-side
+  // analogue of the oracle's anchor resolution in simple-rich-doc.ts).
+  //
+  // With PURE placement (Task A: no sticky-skip), a markStart/markEnd is a plain
+  // FugueMax anchor whose RESOLVED ITEM POSITION depends on how FugueMax ordered
+  // it relative to CONCURRENT boundary text — which does NOT match the oracle's
+  // char-identity anchor even when the text order is identical. So we MUST NOT
+  // use an anchor item's own visible position; we compute the span boundary
+  // PURELY from the anchor op's originLeft (= the char immediately left of the
+  // gap at integration time — immutable, a pure function of the op's prepare
+  // version) plus the causal graph.
+  //
+  // `beforeChar(originLeft, opLv)` = the resolved gap 'before char[k]', where
+  // char[k] is the first TEXT item to the right of `originLeft` that ALREADY
+  // EXISTED when `opLv` was created (an ancestor of it). We walk textSeq right
+  // over chars NEWER than the op and stop at the first ancestor char; every
+  // newer char in between sits LEFT of the gap. Tombstoned chars are walked too
+  // (they occupy a gap), so a deleted char[k] still anchors to the right visible
+  // gap — exactly the oracle's resolveAnchor('before', char[k]).
+  //
+  // START is right-sticky: start := beforeChar(markStart.originLeft, markStart)
+  //   = 'before char[start]'. Text typed at the start stays OUTSIDE the span.
+  // END (EXPANDING, bold/italic/underline/font/color, endSide 'before'):
+  //   end := beforeChar(markEnd.originLeft, markEnd) = 'before char[end]'. Text
+  //   typed at the span end JOINS it.
+  // END (NON-EXPANDING, link/comment, endSide 'after'):
+  //   end := visAfter(markEnd.originLeft) = 'after char[end-1]'. Text typed at
+  //   the span end stays OUTSIDE.
+  //
+  // Pure (originLeft + visible positions + isAncestor on the causal graph),
+  // hence order-independent and convergent.
+  const beforeChar = (originLeft: number, opLv: number): number => {
+    const startIdx = originLeft !== -1 && textIdx.has(originLeft)
+      ? textIdx.get(originLeft)! + 1 : 0
+    for (let i = startIdx; i < textSeq.length; i++) {
+      // char[k] = first char to the right that was VISIBLE when opLv was
+      // created. Newer chars (not yet existing) and chars already deleted at
+      // creation time are both skipped — they all sit LEFT of the resolved gap.
+      if (visibleAtOp(textSeq[i].lv, opLv)) return textSeq[i].visBefore
+    }
+    return textLen   // no visible-at-op char to the right -> doc end
+  }
+  for (const s of raw) {
+    s.start = beforeChar(s.startOriginLeft, s.startLv)
+    s.end = markPolicy(s.markType).endSide !== 'before'
+      ? (s.endOriginLeft === -1 ? 0 : (visAfter.get(s.endOriginLeft) ?? textLen))
+      : beforeChar(s.endOriginLeft, s.endLv)
+  }
+  // NOTE: the empty-span drop (yjs#197) is DEFERRED to AFTER the paragraph-start
+  // extension below — that extension can move a span's start LEFT and thereby
+  // turn an apparently-empty span (start === end, e.g. the marked char was
+  // deleted) into a non-empty one at a block start.
 
   // Block-boundary placement at RESOLUTION (design spec §4.3 v1 note),
   // implemented purely (the engine-side analogue of the oracle's
@@ -140,6 +242,11 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
     }
   }
 
+  // Drop spans that resolved to empty (end <= start). yjs#197-style: an empty
+  // span contributes nothing. Done AFTER the paragraph-start extension so a span
+  // whose start was just pulled left to a block start survives.
+  for (let i = raw.length - 1; i >= 0; i--) if (raw[i].end <= raw[i].start) raw.splice(i, 1)
+
   // Pass 2 - per-type resolution.
   const spans: MarkSpan[] = []
   const types = [...new Set(raw.map(s => s.markType))]
@@ -157,12 +264,16 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
     // fold is order-dependent in principle - wins() mixes causal dominance
     // with an (agent,seq) tie-break, which is not transitive across mixed
     // dominance/concurrency triples, so with 3+ concurrent same-position
-    // spans the fold's winner can depend on iteration order. It converges
-    // across replicas anyway because ofType inherits Pass 1's item order,
-    // which eg-walker guarantees identical on every replica. Any reimpl
-    // (Rust port, SimpleRichDoc oracle) MUST resolve in the same document
-    // order; the invariant to test is cross-replica convergence, not
-    // equality with an abstract "causally newest" winner.
+    // spans the fold's winner can depend on iteration order. To make the
+    // winner a TOTAL, REPLICA-INDEPENDENT, and ORACLE-REPRODUCIBLE function we
+    // fold in a CANONICAL order keyed only on replica-independent data: the
+    // span's resolved (start, end) then the RAW (agent,seq) of its markStart.
+    // Every replica AND the side-table oracle resolve these identically, so the
+    // fold order — and therefore the intransitive-triple winner — is identical
+    // everywhere. (Previously this relied on Pass-1 item order, which the oracle
+    // cannot reproduce without integrating anchors as items.)
+    ofType.sort((x, y) => x.start - y.start || x.end - y.end
+      || causalGraph.lvCmp(cg, x.lv, y.lv))
     const winner: (RawSpan | null)[] = new Array(textLen).fill(null)
     for (const s of ofType)
       for (let p = s.start; p < s.end; p++)
@@ -181,7 +292,14 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
       if (runStart < 0 && v !== undefined) { runStart = p; runVal = v }
     }
   }
-  spans.sort((x, y) => x.start - y.start || x.end - y.end || (x.markType < y.markType ? -1 : 1))
+  // Canonical span order. The final tie-break on value (by JSON) gives multi
+  // ('comment') spans that share start/end/markType a DETERMINISTIC order, so
+  // the differential comparison (and any consumer's deepEqual) does not flicker
+  // on insertion order. Mirrored exactly by the oracle.
+  const vkey = (v: any) => JSON.stringify(v ?? null)
+  spans.sort((x, y) => x.start - y.start || x.end - y.end
+    || (x.markType < y.markType ? -1 : x.markType > y.markType ? 1 : 0)
+    || (vkey(x.value) < vkey(y.value) ? -1 : vkey(x.value) > vkey(y.value) ? 1 : 0))
 
   // Blocks (design spec §4.3): dedupe same-position boundaries by causal
   // winner, then partition [0, textLen).
@@ -207,8 +325,8 @@ export function resolve<T>(items: Item[], oplog: ListOpLog<T>):
 
 /** Materialize a full RichSnapshot (design spec layer 5). */
 export function checkoutRich<T>(oplog: ListOpLog<T>): RichSnapshot<T> {
-  const { snapshot, items } = checkoutWithItems(oplog)
-  const { spans, blocks } = resolve(items, oplog)
+  const { snapshot, items, delTargets } = checkoutWithItems(oplog)
+  const { spans, blocks } = resolve(items, oplog, delTargets)
   return {
     text: snapshot, spans, blocks,
     version: causalGraph.lvToRawList(oplog.cg, oplog.cg.heads),
