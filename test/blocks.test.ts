@@ -69,3 +69,21 @@ test('block_paragraph_start_exception', () => {
     s.spans.filter(x => x.markType === 'bold').map(x => [x.start, x.end]),
     [[1, 3]], 'X inherits bold from following char at paragraph start')
 })
+
+// v1 block-placement semantics (pinned deliberately): a text insert at a
+// boundary position ALWAYS lands at the start of the FOLLOWING block, marks
+// or no marks. The boundary index is genuinely ambiguous (end of block 1 ==
+// start of block 2) and ops carry no cursor affinity, so v1 picks the
+// intuitive side: typing at the visual start of a paragraph stays in that
+// paragraph. This consciously overrides the naive "boundary is right-sticky
+// for text" reading of design spec §4.3 (see §4.3's v1 note).
+test('block_text_insert_at_boundary_lands_in_following_block', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'ab')
+  localSplitBlock(o, 'o', 1)              // a | b
+  localInsert(o, 'o', 1, 'X')             // no marks anywhere
+  const s = checkoutRich(o)
+  assert.equal(s.text.join(''), 'aXb')
+  assert.deepEqual(s.blocks.map(b => [b.start, b.end]), [[0, 1], [1, 3]],
+    'X belongs to block 2')
+})
