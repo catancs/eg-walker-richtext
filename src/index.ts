@@ -36,14 +36,34 @@ function assertEq<T>(a: T, b: T, msg?: string) {
  * Operations also have an ID (agent,seq pair) and a list of parent versions. In this
  * implementation, the ID and parents are stored separately - in the causal graph.
 */
+/**
+ * Side controls anchor stickiness at insertion (design spec §4.2):
+ * - 'before' = right-sticky: text inserted at the anchor's position stops
+ *   BEFORE the anchor (anchor stays after the new text).
+ * - 'after'  = left-sticky: insertion skips PAST the anchor (anchor stays
+ *   before the new text).
+ */
+export type Side = 'before' | 'after'
+
 export type ListOp<T = any> = {
-  type: 'ins',
-  pos: number
-  content: T
+  type: 'ins', pos: number, content: T
 } | {
-  type: 'del',
-  pos: number,
+  type: 'del', pos: number,
+} | {
+  // Zero-width anchor opening a mark span. Identity = the op's (agent,seq).
+  type: 'markStart', pos: number, side: Side, markType: string, value?: any
+} | {
+  // Zero-width anchor closing a span. startId references the matching
+  // markStart by RAW version (agent,seq) — stable across replicas (LVs are
+  // replica-local and MUST NOT appear inside ops).
+  type: 'markEnd', pos: number, side: Side, markType: string,
+  startId: [agent: string, seq: number]
+} | {
+  // Flat block separator (¶). Right-sticky by definition (design spec §4.3).
+  type: 'blockBoundary', pos: number, blockType: string
 }
+
+export type ItemKind = 'text' | 'markStart' | 'markEnd' | 'blockBoundary'
 
 export interface ListOpLog<T = any> {
   // The LV for each op is its index in this list.
@@ -138,6 +158,12 @@ enum ItemState {
 interface Item {
   opId: number,
 
+  // What sort of thing this item is. 'text' contributes width; anchors don't.
+  kind: ItemKind,
+
+  // For anchor items: the anchor's stickiness side. null for plain text.
+  side: Side | null,
+
   /**
    * The item's state at this point in the merge. This is initially set to Inserted,
    * but if we reverse the operation out we'll end up in NotYetInserted. And if the item
@@ -225,7 +251,10 @@ function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
 }
 
 
-const itemWidth = (state: ItemState): number => state === ItemState.Inserted ? 1 : 0
+// Only visible text contributes document width. Anchors are zero-width
+// always; tombstoned text is zero-width too.
+const itemWidth = (state: ItemState, kind: ItemKind): number =>
+  (state === ItemState.Inserted && kind === 'text') ? 1 : 0
 
 interface DocCursor {
   idx: number,
@@ -241,8 +270,8 @@ function findByCurPos(ctx: EditContext, targetPos: number): DocCursor {
     if (i >= ctx.items.length) throw Error('Document is not long enough to find targetPos')
 
     const item = ctx.items[i]
-    curPos += itemWidth(item.curState)
-    endPos += itemWidth(item.endState)
+    curPos += itemWidth(item.curState, item.kind)
+    endPos += itemWidth(item.endState, item.kind)
 
     i++
   }
@@ -315,7 +344,7 @@ function integrate(ctx: EditContext, cg: causalGraph.CausalGraph, newItem: Item,
       else scanning = orightIdx < rightIdx
     }
 
-    scanEndPos += itemWidth(other.endState)
+    scanEndPos += itemWidth(other.endState, other.kind)
     scanIdx++
 
     if (!scanning) {
@@ -339,7 +368,7 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // the data is invalid or we've messed something up somewhere.
     while (ctx.items[cursor.idx].curState !== ItemState.Inserted) {
       const item = ctx.items[cursor.idx]
-      cursor.endPos += itemWidth(item.endState)
+      cursor.endPos += itemWidth(item.endState, item.kind)
       cursor.idx++
     }
 
@@ -360,7 +389,7 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
 
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[opId] = item.opId
-  } else {
+  } else if (op.type === 'ins') {
     // Insert! This is much more complicated as we need to do the Yjs integration.
     const cursor = findByCurPos(ctx, op.pos)
     // The cursor position is at the first valid insert location.
@@ -391,6 +420,8 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     } // If we run out of items, originRight is just -1 (as above) and rightIdx is ctx.items.length.
 
     const newItem: Item = {
+      kind: 'text',
+      side: null,
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
       opId: opId,
@@ -618,6 +649,8 @@ export function mergeChangesIntoBranch<T>(branch: Branch<T>, oplog: ListOpLog<T>
       // TODO: Consider using some weird IDs here instead of normal numbers to make it clear.
       // Right now these IDs are also used in ctx.itemsByLV, but if that becomes a Map instead it would work better.
       opId,
+      kind: 'text',
+      side: null,
       curState: ItemState.Inserted,
       endState: ItemState.Inserted,
       originLeft: -1,
