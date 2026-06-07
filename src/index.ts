@@ -431,6 +431,12 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // content lands after them, and stop at the first right-sticky ('before')
     // anchor or text item. Deterministic on item metadata only
     // (state-independent - replay-safe).
+    //
+    // This loop is the SOLE enforcement point for expand semantics: which side
+    // an anchor carries comes from markPolicy(markType).endSide (see the Side
+    // doc comment above + mark-config.ts). Bold's markEnd is 'before' so text
+    // typed at the span end lands inside (bold grows); link's is 'after' so it
+    // lands outside. Task 6 extends this loop with a paragraph-start exception.
     while (cursor.idx < ctx.items.length) {
       const it = ctx.items[cursor.idx]
       if (it.kind !== 'text' && it.curState === ItemState.Inserted && it.side === 'after') {
