@@ -13,7 +13,13 @@
 //   * The TIME column WILL show us slower than Yjs/Automerge. That is EXPECTED
 //     and is NOT the claim. It measures the gap between a readable reference and
 //     years of production engineering (Rust/WASM cores, RLE, lazy traversal),
-//     NOT a property of the model.
+//     NOT a property of the model. NOTE on batching fairness: we batch Automerge
+//     into ONE change() (per-op change() is pathologically slow and would unfairly
+//     paint Automerge as "unusable"). Ours gets the SAME shape of advantage — we
+//     append cheaply then materialize with ONE checkoutRich() at the end, not one
+//     checkout per op. So the time comparison is NOT structurally handicapping
+//     ours; ours is slow purely because the reference checkout re-replays the whole
+//     oplog naively (per-char ops, no RLE, no lazy skip).
 //   * The ENCODED-SIZE column for "ours" is JSON text with no compaction; Yjs
 //     and Automerge ship purpose-built binary codecs. Again: engineering, not
 //     model. We label ours "reference (unoptimized TS); no binary codec".
@@ -223,7 +229,10 @@ function runOurs(ops: FlatOp[], markPlan: MarkOp[]): Row[] {
     ms: null,
     heapBytes: heap,
     encodedBytes: snapshotProxyBytes,
-    note: 'O(document) resolved snapshot {text,spans,blocks}, ZERO per-char metadata (claim C3)',
+    note:
+      'O(document) RESOLVED SNAPSHOT {text,spans,blocks}, ZERO per-char metadata (claim C3). ' +
+      'NOT comparable to the libs binary "encoded" rows: those encode FULL HISTORY; this is a ' +
+      'point-in-time read form. The apples-to-apples size-vs-libs row is 3-steady-oplog-json below.',
   })
   rows.push({
     library: OURS_LABEL,
@@ -406,6 +415,14 @@ function printTable(rows: Row[]) {
       )} | ${note} |`,
     )
   }
+  console.log('')
+  console.log(
+    '> NOTE on the `encoded` column: rows are NOT all the same KIND of artifact. ' +
+      "The libs' `3-steady-encoded` rows and our `3-steady-oplog-json` row are FULL-HISTORY " +
+      'encodings (apples-to-apples — and ours LOSES there: JSON, no binary codec in v1). ' +
+      'Our `3-steady-snapshot-proxy` row is a point-in-time RESOLVED snapshot (a different kind ' +
+      'of thing); do NOT read it as beating the binary encoders on size.',
+  )
   console.log('')
 }
 
