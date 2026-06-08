@@ -419,75 +419,28 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
     // ins | markStart | markEnd | blockBoundary all integrate as items.
     // (Anchor items are zero-width; only text contributes document width.)
     const kind: ItemKind = op.type === 'ins' ? 'text' : op.type
+    // The `side` field is RECORDED on the item (resolution reads it to decide
+    // expand/contract) but it NO LONGER affects placement. Anchors integrate as
+    // plain zero-width FugueMax items exactly like text inserts.
     const side: Side | null =
       op.type === 'markStart' || op.type === 'markEnd' ? op.side
-      : op.type === 'blockBoundary' ? 'before'      // ¶ is right-sticky (spec §4.3)
+      : op.type === 'blockBoundary' ? 'before'
       : null
 
     const cursor = findByCurPos(ctx, op.pos)
-    // Sticky-skip (design spec §4.2): the cursor from findByCurPos stops at the
-    // FIRST slot at the target position. Zero-width anchors at this position
-    // define n+1 slots; we skip past left-sticky ('after') anchors so new
-    // content lands after them, and stop at the first right-sticky ('before')
-    // anchor or text item. Deterministic on item metadata only
-    // (state-independent - replay-safe).
+    // PURE PLACEMENT (design spec §3): there is NO sticky-skip. The cursor from
+    // findByCurPos points at the first slot at the target position and we
+    // integrate there with base FugueMax integrate() — identical to the plain
+    // 'ins' path. ANY side-based cursor movement here reads replica-dependent
+    // transient item arrangement (the order in which concurrent not-yet-inserted
+    // anchors happen to be materialised) and breaks convergence; the prior
+    // fuzzing run proved that removing it gives 0/10k engine-internal divergence.
     //
-    // This loop is the SOLE enforcement point for expand semantics: which side
-    // an anchor carries comes from markPolicy(markType).endSide (see the Side
-    // doc comment above + mark-config.ts). Bold's markEnd is 'before' so text
-    // typed at the span end lands inside (bold grows); link's is 'after' so it
-    // lands outside.
-    //
-    // Paragraph-start exception (design spec §4.2, Peritext §3.3): a char typed
-    // at the START of a block (i.e. into the zero-width anchor cluster that
-    // contains a live blockBoundary) must land INSIDE spans that open at the
-    // block start, so it inherits the following char's expanding marks - the
-    // preceding char lives in the previous block and must not lend its marks.
-    // To achieve that we skip TEXT inserts past the *entire* cluster (every
-    // right-sticky markStart AND the boundary), not just left-sticky anchors.
-    //
-    // We must detect the boundary up front rather than flip a flag as we walk:
-    // markStart vs blockBoundary document order is NOT semantically stable - it
-    // is just op-creation order (split-then-mark yields markStart-before-bound,
-    // mark-then-split the reverse). A left-looking / walk-and-flip rule would
-    // therefore be order-dependent. Scanning the cluster keeps the rule
-    // deterministic on item metadata only (kind/side/curState - replay-safe)
-    // and independent of that incidental ordering.
-    //
-    // The cluster is the run of live zero-width anchors at the cursor, bounded
-    // by the next live (Inserted) text item - the first char of the position.
-    // (We only look at live anchors / stop at the first live char, mirroring
-    // the skip loop below, so the two stay consistent.)
-    //
-    // Cost note: the scan steps over tombstoned text, so its worst case is
-    // O(tombstone run length) at the insert position, not O(anchor cluster).
-    // Accepted for this reference implementation; an optimized port would
-    // index over tombstone runs anyway.
-    let atParagraphStart = false
-    if (kind === 'text') {
-      for (let i = cursor.idx; i < ctx.items.length; i++) {
-        const it = ctx.items[i]
-        if (it.kind === 'text') {
-          if (it.curState === ItemState.Inserted) break     // live char ends cluster
-          else continue                                     // tombstone: zero-width
-        }
-        if (it.curState !== ItemState.Inserted) break        // dead anchor ends cluster
-        if (it.kind === 'blockBoundary') { atParagraphStart = true; break }
-      }
-    }
-    while (cursor.idx < ctx.items.length) {
-      const it = ctx.items[cursor.idx]
-      // Skip left-sticky ('after') anchors always; at a paragraph start also
-      // skip right-sticky markStarts and the boundary so text lands inside the
-      // spans that open at the block start. Stop at the first right-sticky
-      // anchor / live text / dead anchor otherwise.
-      const skip = it.kind !== 'text' && it.curState === ItemState.Inserted
-        && (it.side === 'after'
-            || (atParagraphStart && (it.kind === 'markStart' || it.kind === 'blockBoundary')))
-      if (!skip) break
-      cursor.endPos += itemWidth(it.endState, it.kind)     // 0; kept for uniformity
-      cursor.idx++
-    }
+    // All Peritext stickiness/expand semantics are computed purely at resolution
+    // (resolve.ts) from endState + recorded positions + the causal graph:
+    //   - markEnd expand/contract  -> resolve.ts span-end extension
+    //   - blockBoundary placement   -> resolve.ts visAfter(originLeft)
+    //   - paragraph-start inheritance -> resolve.ts span-start extension
 
     // The cursor position is at the first valid insert location.
     if (cursor.idx > 0) {
@@ -671,7 +624,7 @@ export function checkout<T>(oplog: ListOpLog<T>): Branch<T> {
  *  items (including zero-width anchors). Consumed by resolve.ts (Task 4)
  *  and the anchor tests. */
 export function checkoutWithItems<T>(oplog: ListOpLog<T>):
-    { snapshot: T[], items: Item[], version: number[] } {
+    { snapshot: T[], items: Item[], delTargets: number[], version: number[] } {
   const ctx: EditContext = {
     items: [],
     delTargets: new Array(oplog.ops.length).fill(-1),
@@ -680,7 +633,10 @@ export function checkoutWithItems<T>(oplog: ListOpLog<T>):
   }
   const snapshot: T[] = []
   traverseAndApply(ctx, oplog, snapshot)
-  return { snapshot, items: ctx.items, version: oplog.cg.heads.slice() }
+  // delTargets[delOpLv] = the LV of the text item that del op tombstoned. Used
+  // by resolve.ts to determine which chars were ALREADY DELETED at a mark op's
+  // creation time (so span-end resolution skips them when finding char[end]).
+  return { snapshot, items: ctx.items, delTargets: ctx.delTargets, version: oplog.cg.heads.slice() }
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
