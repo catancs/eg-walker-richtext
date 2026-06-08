@@ -2,8 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createOpLog, localInsert, localDelete, localMark, localSplitBlock, mergeOplogInto,
-  checkoutSimpleString, checkoutWithItems, ItemState, type ListOpLog,
+  checkoutSimpleString, checkoutWithItems,
 } from '../src/index.js'
+import { checkoutRich } from '../src/resolve.js'
 
 test('anchors do not perturb text', () => {
   const o = createOpLog<string>()
@@ -43,35 +44,50 @@ test('delete skips anchors and deletes text', () => {
   assert.equal(checkoutSimpleString(o), 'b')
 })
 
-// --- Task 3: sticky-skip insertion (expand semantics) ---
+// --- Expand semantics (was Task 3: sticky-skip at insert; now RESOLUTION) ---
+//
+// LAYER MOVE (task A/B): placement is now pure base FugueMax — anchors integrate
+// as plain zero-width items with NO side-based skip, so the item ORDER no longer
+// encodes expand/contract (it would read replica-dependent transient arrangement
+// and break convergence). The expand/contract SEMANTIC moved to pure resolution
+// (resolve.ts), so these tests now assert the resolved SPAN via checkoutRich
+// instead of the item order. The pinned SEMANTIC is unchanged and preserved:
+//   - typing at the END of a bold (expanding) span -> the char is INSIDE
+//   - typing at the END of a link (non-expanding) span -> the char is OUTSIDE
+//   - typing at the START of a bold span -> the char is OUTSIDE (start right-sticky)
+// (Previously these asserted item order: bold='markStart t t t markEnd',
+// link='markStart t t markEnd t', start='t markStart t t markEnd'. That order
+// is no longer load-bearing; the span it implied is what's asserted now.)
 
-const kinds = (o: ListOpLog<string>) => checkoutWithItems(o).items
-  .filter(i => i.curState === ItemState.Inserted)
-  .map(i => i.kind === 'text' ? 't' : i.kind)
-
-test('typing at end of bold span lands INSIDE (endSide before = right-sticky)', () => {
+test('typing at end of bold span lands INSIDE (expanding end) [resolution]', () => {
   const o = createOpLog<string>()
   localInsert(o, 'a', 0, ...'ab')
-  localMark(o, 'a', 0, 2, 'bold', true)   // bold "ab", end anchor right-sticky
-  localInsert(o, 'a', 2, 'X')             // type at boundary
-  // Expected order: markStart a b X markEnd  -> X inside
-  assert.deepEqual(kinds(o), ['markStart', 't', 't', 't', 'markEnd'])
+  localMark(o, 'a', 0, 2, 'bold', true)   // bold "ab"
+  localInsert(o, 'a', 2, 'X')             // type at the span end
+  assert.equal(checkoutRich(o).text.join(''), 'abX')
+  // bold covers a, b AND the typed X -> span [0,3)
+  assert.deepEqual(checkoutRich(o).spans,
+    [{ start: 0, end: 3, markType: 'bold', value: true }])
 })
 
-test('typing at end of link span lands OUTSIDE (endSide after = left-sticky)', () => {
+test('typing at end of link span lands OUTSIDE (non-expanding end) [resolution]', () => {
   const o = createOpLog<string>()
   localInsert(o, 'a', 0, ...'ab')
   localMark(o, 'a', 0, 2, 'link', 'https://x')
   localInsert(o, 'a', 2, 'X')
-  // Expected: markStart a b markEnd X  -> X outside
-  assert.deepEqual(kinds(o), ['markStart', 't', 't', 'markEnd', 't'])
+  assert.equal(checkoutRich(o).text.join(''), 'abX')
+  // link covers a, b but NOT the typed X -> span [0,2)
+  assert.deepEqual(checkoutRich(o).spans,
+    [{ start: 0, end: 2, markType: 'link', value: 'https://x' }])
 })
 
-test('typing at start of bold span lands OUTSIDE (start right-sticky)', () => {
+test('typing at start of bold span lands OUTSIDE (start right-sticky) [resolution]', () => {
   const o = createOpLog<string>()
   localInsert(o, 'a', 0, ...'ab')
   localMark(o, 'a', 0, 2, 'bold', true)
-  localInsert(o, 'a', 0, 'X')
-  // Expected: X markStart a b markEnd
-  assert.deepEqual(kinds(o), ['t', 'markStart', 't', 't', 'markEnd'])
+  localInsert(o, 'a', 0, 'X')             // type at the span start
+  assert.equal(checkoutRich(o).text.join(''), 'Xab')
+  // bold covers a, b but NOT the typed X -> span [1,3)
+  assert.deepEqual(checkoutRich(o).spans,
+    [{ start: 1, end: 3, markType: 'bold', value: true }])
 })

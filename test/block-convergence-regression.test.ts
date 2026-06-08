@@ -70,11 +70,13 @@ function drive(seed: string, opsPerRun = 60): string[] {
   return reps.map(r => checkoutRich(r.oplog).text.join(''))
 }
 
-// KNOWN-FAILING: engine replicas a/c resolve 'colhygenpzpnovtjlt' while replica
-// b resolves 'oclhygenpzpnovtjlt' (the 'o'/'c' pair at the doc start orders
-// differently). Flip `test.todo` -> `test` after fixing the paragraph-start
-// skip to be replay-order independent.
-test.todo('block_paragraph_start_concurrent_convergence (fuzzer seed egwrt-1-0)', () => {
+// FIXED (paragraph-start moved placement->resolution + blockBoundary made
+// left-sticky): engine replicas previously diverged at the doc start (a/c
+// resolved 'colhygenpzpnovtjlt', b resolved 'oclhygenpzpnovtjlt') because the
+// paragraph-start text-skip read the replica-local order of concurrent,
+// not-yet-inserted block boundaries. With placement now a pure function of the
+// prepare version, all replicas converge.
+test('block_paragraph_start_concurrent_convergence (fuzzer seed egwrt-1-0)', () => {
   const texts = drive('egwrt-1-0')
   for (const t of texts) {
     assert.equal(t, texts[0],

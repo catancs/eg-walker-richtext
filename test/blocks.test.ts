@@ -87,3 +87,32 @@ test('block_text_insert_at_boundary_lands_in_following_block', () => {
   assert.deepEqual(s.blocks.map(b => [b.start, b.end]), [[0, 1], [1, 3]],
     'X belongs to block 2')
 })
+
+// Paragraph-start inheritance must NOT cross a block boundary into the PREVIOUS
+// block. A bold span whose marked char is already at the start of its own block
+// must NOT extend left over the prior block's trailing char — even when that
+// char is causally newer than the mark op. (Distilled from the verify-C-719
+// fuzz divergence: the engine's paragraph-start extension walked left across the
+// block boundary and captured a prior-block char. The correct, oracle-matching
+// behaviour keeps the span inside its own block.)
+//
+// Construction: blocks "a | b"; bold "b" (already at block-2 start); then a
+// concurrent replica inserts "Z" at the very front (block 1, before "a"). "Z" is
+// causally newer than the bold op but lives in block 1, so it must stay
+// unbolded — the bold stays [start-of-b, end-of-b).
+test('block_paragraph_start_does_not_cross_into_previous_block', () => {
+  const a = createOpLog<string>(), b = createOpLog<string>()
+  localInsert(a, 'a', 0, ...'ab')
+  localSplitBlock(a, 'a', 1)              // a | b
+  localMark(a, 'a', 1, 2, 'bold', true)  // bold "b" at the start of block 2
+  mergeOplogInto(b, a)
+  localInsert(b, 'b', 0, 'Z')            // concurrently prepend Z in block 1
+  mergeOplogInto(a, b); mergeOplogInto(b, a)
+  const sa = checkoutRich(a), sb = checkoutRich(b)
+  assert.equal(sa.text.join(''), 'Zab')
+  assert.deepEqual(sa.spans, sb.spans, 'replicas converge')
+  // Blocks: "Za" | "b"  -> boundary at 2. Bold covers only "b" (pos 2).
+  assert.deepEqual(sa.blocks.map(x => [x.start, x.end]), [[0, 2], [2, 3]])
+  assert.deepEqual(sa.spans.filter(x => x.markType === 'bold').map(x => [x.start, x.end]),
+    [[2, 3]], 'bold stays inside its own block; does not capture prior-block Z')
+})
