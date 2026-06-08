@@ -95,9 +95,15 @@ test('conformance_plaintext_ff-raw.json_via_checkoutRich', () => {
 })
 
 // SECONDARY: am.json is a bare array of DTExport items with NO endContent
-// ground truth, so we oracle against the upstream-proven plain checkout.
-// ~100s (two full ~50s checkouts on a 105k-char trace) -> generous timeout.
-test('conformance_plaintext_am.json_via_checkoutRich', { timeout: 240_000 }, () => {
+// ground truth, so we oracle against the upstream-proven plain checkout
+// (engine-vs-engine, weaker than ff-raw's external ground truth). ~100s
+// (two full ~50s checkouts on a 105k-char trace) -> generous timeout, and
+// gated behind SLOW_TESTS so the default `npm test` stays fast. The real
+// conformance proof (ff-raw, <1s) always runs.
+test('conformance_plaintext_am.json_via_checkoutRich', {
+  timeout: 240_000,
+  skip: process.env.SLOW_TESTS ? false : 'set SLOW_TESTS=1 to run (~90s)',
+}, () => {
   const data: DTExportItem[] = JSON.parse(fs.readFileSync('testdata/am.json', 'utf8'))
   const oplog = oplogFromDTExport(data)
   const snap = checkoutRich(oplog)
