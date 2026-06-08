@@ -10,7 +10,7 @@
     "build": "tsc -p .",
     "test": "npm run build && node dist/test/upstream/test.js && FUZZ_ITERS=100 node dist/test/upstream/fuzzer.js && node --test \"dist/test/**/*.test.js\"",
     "fuzz:rich": "npm run build && node dist/test/rich-fuzzer.js",
-    "bench": "npm run build && node dist/bench/bench.js",
+    "bench": "npm run build && node --expose-gc dist/bench/bench.js",
     "evidence": "npm run build && node dist/scripts/gen-evidence.js"
   },
   "dependencies": {
@@ -18,10 +18,12 @@
     "priorityqueuejs": "^2.0.0"
   },
   "devDependencies": {
+    "@automerge/automerge": "^3.2.6",
     "@types/node": "^20.8.9",
     "@types/priorityqueuejs": "^1.0.3",
     "@types/seed-random": "^2.2.3",
     "seed-random": "^2.2.0",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "yjs": "^13.6.31"
   }
 }
