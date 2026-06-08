@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Nightly deep fuzz at 03:17 UTC (off-peak; avoids the top-of-hour runner rush).
+    - cron: '17 3 * * *'
+
+# Cancel superseded runs on the same ref (keeps PR queues short). main/nightly
+# runs get a unique group so they are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Per-push / per-PR gate: full conformance + node:test suite, then a
+  # 10k-iteration differential fuzz. Locally the suite is ~9s and 10k fuzz
+  # iters are a couple of minutes; runners are slower but comfortably fit.
+  test:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22 LTS: supports the `node --test` glob runner and the
+          # project's ES2022 / NodeNext module resolution.
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # `npm test` = build + upstream test.js + upstream fuzzer @100 + node --test glob.
+      - run: npm test
+
+      # Differential rich-text fuzz at 10k iterations (honors FUZZ_ITERS).
+      - name: Differential fuzz (10k iters)
+        run: FUZZ_ITERS=10000 npm run fuzz:rich
+
+  # Nightly deep fuzz: a single long run with a per-run-unique seed base so
+  # each night explores fresh space.
+  #
+  # Iteration count: 500000. Locally 2k iters ~1.3s (~0.65 ms/iter); GitHub
+  # ubuntu-latest runners are materially slower, so budgeting ~5x gives roughly
+  # 27 min for 500k. That fits well inside the 90-minute timeout below with
+  # ample headroom for build + npm ci + runner variance. (1M was rejected: it
+  # risks brushing the timeout on a slow runner — 500k is the defensible round
+  # number that we can actually finish every night.)
+  nightly-fuzz:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Deep differential fuzz (500k iters, unique seed base)
+        run: FUZZ_ITERS=500000 FUZZ_SEED=nightly-${{ github.run_id }} npm run fuzz:rich
