@@ -261,6 +261,20 @@ export class SimpleRichDoc {
     this.frontier = union.filter(h => !union.some(o => o !== h && this.hb(h, o)))
   }
 
+  // Differential-fuzzer support (oracle side, mirrors engineTextItemOrder in
+  // resolve.ts). Full fugue text-item order in document order INCLUDING
+  // tombstones, each as a `${agent}:${seq}` id + deleted flag. The fuzzer
+  // compares this against the engine's order to tell a documented text-CRDT-
+  // variant tombstone-ordering difference apart from a real mark bug. This is a
+  // read-only introspection of the oracle's own state — it does NOT import or
+  // observe the engine, so engine/oracle independence on the mark mechanism is
+  // preserved.
+  textItemOrder(): { id: string; deleted: boolean }[] {
+    return this.items().map(it => ({
+      id: `${it.id.sender}:${it.id.counter}`, deleted: it.deleted,
+    }))
+  }
+
   // ---- materialization ----
 
   // Resolve an anchor to a GAP position (index among VISIBLE chars). Walk the
