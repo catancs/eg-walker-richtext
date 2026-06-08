@@ -332,3 +332,27 @@ export function checkoutRich<T>(oplog: ListOpLog<T>): RichSnapshot<T> {
     version: causalGraph.lvToRawList(oplog.cg, oplog.cg.heads),
   }
 }
+
+/**
+ * Differential-fuzzer support (NOT part of the persistent snapshot / public
+ * model). Returns the engine's full TEXT-item order in document order INCLUDING
+ * tombstones, each as a `${agent}:${seq}` raw id plus a `deleted` flag. Used by
+ * the fuzzer to decide whether an engine/oracle span difference is fully
+ * explained by the two sequence CRDTs ordering concurrent TOMBSTONES
+ * differently (a documented text-CRDT-variant limitation — see rich-fuzzer.ts),
+ * vs a genuine mark-resolution bug. Reading this NEVER feeds back into
+ * resolution; it is purely an oracle-comparison instrument.
+ */
+export function engineTextItemOrder<T>(oplog: ListOpLog<T>):
+    { id: string, deleted: boolean }[] {
+  const { items } = checkoutWithItems(oplog)
+  const cg = oplog.cg
+  const out: { id: string, deleted: boolean }[] = []
+  for (const it of items) {
+    if (it.opId >= oplog.ops.length) continue   // merge placeholder
+    if (it.kind !== 'text') continue
+    const raw = causalGraph.lvToRaw(cg, it.opId)
+    out.push({ id: `${raw[0]}:${raw[1]}`, deleted: it.endState !== ItemState.Inserted })
+  }
+  return out
+}
