@@ -1,5 +1,18 @@
 # eg-walker-richtext
 
+<p align="center">
+  <img src="assets/social-preview.png" alt="eg-walker-richtext: Peritext-semantics rich text on the Eg-walker algorithm, the first implementation refuting the claim that Peritext cannot be modeled on it" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/catancs/eg-walker-richtext/actions/workflows/ci.yml"><img src="https://github.com/catancs/eg-walker-richtext/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/TypeScript-5.4-3178c6.svg" alt="TypeScript 5.4">
+  <a href="https://arxiv.org/abs/2409.14252"><img src="https://img.shields.io/badge/built%20on-Eg--walker-2c8a2c.svg" alt="Built on Eg-walker"></a>
+  <img src="https://img.shields.io/badge/differential%20fuzz-500k%2Fnight-2c8a2c.svg" alt="500k-iteration nightly differential fuzz">
+  <img src="https://img.shields.io/badge/status-research%20artifact-b08968.svg" alt="Status: research artifact">
+</p>
+
 **Peritext-semantics rich text on the Eg-walker collaborative-editing algorithm: a reference implementation in TypeScript.** June 2026.
 
 This is, as far as I am aware, the first implementation of inline rich-text marks (bold, italic, underline, link, comment, color, font) plus flat paragraph blocks on the **Eg-walker** event-graph replay algorithm. I built it to refute a specific published claim, that Peritext semantics *cannot* be modeled on Eg-walker, by building the thing and shipping the evidence. It is a research and reference artifact, not a production library (see [Status](#6-status--whats-deferred)).
@@ -29,6 +42,31 @@ flowchart LR
 ```
 
 > I attribute the Loro position honestly: it is a reasonable reading of Eg-walker's replay contract, and the contribution here is showing the contract can be *satisfied* by moving the order-dependent work out of replay rather than concluding it is impossible. This repo contrasts with, and does not disparage, Loro's engineering.
+
+### Where this sits: the landscape in one table
+
+*Contrast, not ranking. The only axis this project leads on is metadata **shape**; the others are mature production systems (or, for Google Docs, a different algorithm lineage entirely). This is a v1 research artifact and does not claim to beat them on speed or encoded size, it does not.*
+
+| Axis | **eg-walker-richtext** (this project) | **Loro** (crdt-richtext) | **Yjs** (Y.Text) | **Automerge** (rich text) | **Google Docs / OT** |
+| --- | --- | --- | --- | --- | --- |
+| **Algorithm family** | Event-graph replay CRDT (Eg-walker) | Sequence CRDT (Fugue) + Peritext spans | Sequence CRDT (YATA) | Sequence CRDT (RGA) + Peritext marks | Operational Transformation (Jupiter), not a CRDT |
+| **Rich-text model** | Peritext-style spans + blocks via a pure resolution function | Peritext spans over a Fugue list | Inline formatting items / attributes in the sequence | Peritext-style marks stored outside the text | Server-side OT document model |
+| **Per-element CRDT metadata in steady state** | Zero in the resolved snapshot <sup>1</sup> | Per-element metadata in its positional layer <sup>2</sup> | Permanent per-item metadata (item IDs, origins) <sup>3</sup> | Permanent per-character metadata (RGA element IDs) <sup>4</sup> | N/A, no CRDT metadata (OT) <sup>5</sup> |
+| **Steady-state persistent form** | Resolved `{text, spans, blocks}` snapshot, O(document), plus an append-only oplog <sup>6</sup> | History/structure with per-element IDs <sup>2</sup> | Item-based document structure (full history) <sup>3</sup> | RGA structure + marks (full history) <sup>4</sup> | Server-stored document + op log <sup>5</sup> |
+| **Maturity** | Research / reference artifact (v1, unoptimized) <sup>7</sup> | Production library | Production library | Production library | Shipped product |
+| **Central server required?** | No (peer-to-peer capable) | No (peer-to-peer capable) | No (peer-to-peer capable) | No (peer-to-peer capable) | Effectively yes (server-coordinated) <sup>5</sup> |
+
+<sub>
+
+1. **This repo:** pure replay integrates only zero-width anchor ops; all order-dependent Peritext semantics are computed by a pure resolution function at materialization. The resolved snapshot `{text, spans, blocks}` is O(document) with zero per-character CRDT metadata, the project's single headline contrast, framed as a metadata-*shape* property, not a benchmark win.
+2. **Loro:** rich text combines Fugue (a list CRDT, whose elements carry CRDT identity) with Peritext-style range annotations kept in a separate `RangeMap`. Loro is heavily compacted (run-length / columnar encoding, tombstone GC), so this is a *model-level* property, not a statement about its encoded footprint. Sources: [Loro rich-text blog](https://loro.dev/blog/loro-richtext), [loro-dev/crdt-richtext](https://github.com/loro-dev/crdt-richtext).
+3. **Yjs:** YATA represents the document as a linked list of `Item` blocks, each with an ID (client+clock) plus origin references; formatting is inline in the sequence. Source: [yjs/INTERNALS.md](https://github.com/yjs/yjs/blob/main/INTERNALS.md).
+4. **Automerge:** `Text` implements Peritext over an RGA sequence (per-element IDs); marks `(start, end, name, value)` are stored outside the text. Rich text landed in Automerge 2.2. Source: [Automerge 2.2: Rich Text](https://automerge.org/blog/rich-text/).
+5. **Google Docs / OT:** the Jupiter OT protocol with a centralized server that transforms and propagates ops; it is operational transformation, not a CRDT, and a *different lineage* that this project neither descends from nor improves on. "Effectively yes" reflects Google's deployed model, not a hard theoretical requirement of OT. Sources: [Jupiter protocol revisited](https://arxiv.org/pdf/1708.04754), [OT vs CRDT](https://arxiv.org/pdf/1905.01517).
+6. **This repo:** the durable write form is an append-only oplog (JSON in v1, no binary codec yet); the O(document) resolved snapshot is the materialized read form, distinct from the history.
+7. **This repo:** deliberately unoptimized TypeScript, explicitly a v1 reference artifact, not production-ready and not claimed to beat Yjs/Automerge on speed or encoded size (see §5 and §6).
+
+</sub>
 
 ---
 

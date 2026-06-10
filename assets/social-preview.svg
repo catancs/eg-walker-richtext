@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f3f8f1"/>
+      <stop offset="1" stop-color="#e8f5e9"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2c8a2c"/>
+      <stop offset="1" stop-color="#3aa64a"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#143d14" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1280" height="8" fill="url(#accent)"/>
+
+  <!-- Abstract event-graph motif (right side, subtle) -->
+  <g opacity="0.5" stroke-linecap="round" fill="none">
+    <!-- edges: a converging merge DAG -->
+    <g stroke="#b08968" stroke-width="2.5" opacity="0.55">
+      <path d="M905,150 L1010,210"/>
+      <path d="M905,150 L1000,330"/>
+      <path d="M1010,210 L1115,270"/>
+      <path d="M1000,330 L1115,270"/>
+      <path d="M1010,210 L1000,330"/>
+      <path d="M1115,270 L1085,430"/>
+      <path d="M1000,330 L1085,430"/>
+    </g>
+    <g stroke="#2c8a2c" stroke-width="2.5">
+      <path d="M905,150 L820,300"/>
+      <path d="M820,300 L1000,330"/>
+      <path d="M820,300 L1085,430"/>
+    </g>
+    <!-- nodes -->
+    <g>
+      <circle cx="905" cy="150" r="13" fill="#f7f0e8" stroke="#b08968" stroke-width="3"/>
+      <circle cx="1010" cy="210" r="13" fill="#f7f0e8" stroke="#b08968" stroke-width="3"/>
+      <circle cx="820" cy="300" r="13" fill="#e8f5e9" stroke="#2c8a2c" stroke-width="3"/>
+      <circle cx="1000" cy="330" r="13" fill="#f7f0e8" stroke="#b08968" stroke-width="3"/>
+      <circle cx="1115" cy="270" r="13" fill="#f7f0e8" stroke="#b08968" stroke-width="3"/>
+      <!-- converged head node, emphasized green -->
+      <circle cx="1085" cy="430" r="18" fill="#2c8a2c" stroke="#143d14" stroke-width="3"/>
+    </g>
+  </g>
+
+  <!-- Eyebrow / kicker -->
+  <text x="80" y="118" font-size="22" letter-spacing="3" font-weight="600" fill="#2c8a2c">COLLABORATIVE RICH-TEXT &#183; REFERENCE IMPLEMENTATION</text>
+
+  <!-- Title -->
+  <text x="78" y="208" font-family="Georgia, 'Times New Roman', serif" font-size="74" font-weight="700" fill="#143d14">eg-walker-richtext</text>
+
+  <!-- Thesis sentence -->
+  <text x="80" y="276" font-size="29" font-weight="500" fill="#244a24">Peritext-semantics rich text on the Eg-walker algorithm: the first</text>
+  <text x="80" y="316" font-size="29" font-weight="500" fill="#244a24">implementation refuting the claim that Peritext can&#8217;t be modeled on it.</text>
+
+  <!-- Feature chips -->
+  <g font-size="20" font-weight="600" filter="url(#soft)">
+    <g>
+      <rect x="80" y="392" width="266" height="52" rx="26" fill="#ffffff" stroke="#2c8a2c" stroke-width="1.5"/>
+      <text x="213" y="425" text-anchor="middle" fill="#1d5a1d">zero per-char metadata</text>
+    </g>
+    <g>
+      <rect x="362" y="392" width="278" height="52" rx="26" fill="#ffffff" stroke="#2c8a2c" stroke-width="1.5"/>
+      <text x="501" y="425" text-anchor="middle" fill="#1d5a1d">pure replay + resolution</text>
+    </g>
+    <g>
+      <rect x="80" y="460" width="234" height="52" rx="26" fill="#f7f0e8" stroke="#b08968" stroke-width="1.5"/>
+      <text x="197" y="493" text-anchor="middle" fill="#7a5a3a">O(document) snapshot</text>
+    </g>
+    <g>
+      <rect x="330" y="460" width="320" height="52" rx="26" fill="#f7f0e8" stroke="#b08968" stroke-width="1.5"/>
+      <text x="490" y="493" text-anchor="middle" fill="#7a5a3a">500k-iteration nightly fuzz</text>
+    </g>
+  </g>
+
+  <!-- Footer line -->
+  <text x="80" y="576" font-size="19" font-weight="500" fill="#5a7a5a">TypeScript research artifact &#183; github.com/catancs/eg-walker-richtext</text>
+</svg>
