@@ -103,6 +103,8 @@ export class SimpleRichDoc {
   private fugue = new ListFugueSimple<Ch>('_oracle_')
   private marks: MarkOp[] = []
   private blocks: BlockOp[] = []
+  // Set of block-boundary op ids that have been tombstoned by a deleteBlock op.
+  private deletedBlocks = new Set<OpId>()
 
   // grow-only causal store: opId -> set of ancestor opIds (its parents, then
   // transitively closed lazily). We record the FRONTIER each op observed.
@@ -245,6 +247,14 @@ export class SimpleRichDoc {
     this.record(id)
   }
 
+  // Tombstone (delete) a block boundary by its [agent, seq] id, mirroring the
+  // engine's localDeleteBoundary / delBlockBoundary op. The boundary is excluded
+  // from materialization from this point on. No op id is consumed (matching the
+  // engine's deleteBlock semantic where the caller advances seq separately).
+  deleteBlock(agent: string, seq: number): void {
+    this.deletedBlocks.add(oid(agent, seq))
+  }
+
   merge(other: SimpleRichDoc): void {
     // union fugue states
     this.fugue.mergeFrom(other.fugue)
@@ -253,6 +263,8 @@ export class SimpleRichDoc {
     for (const m of other.marks) if (!mk.has(oid(m.agent, m.seq))) this.marks.push(m)
     const bk = new Set(this.blocks.map(b => oid(b.agent, b.seq)))
     for (const b of other.blocks) if (!bk.has(oid(b.agent, b.seq))) this.blocks.push(b)
+    // union deleted-block tombstone sets
+    for (const id of other.deletedBlocks) this.deletedBlocks.add(id)
     // union causal store
     for (const [k, v] of other.parents) if (!this.parents.has(k)) this.parents.set(k, v.slice())
     for (const k of other.known) this.known.add(k)
@@ -376,8 +388,9 @@ export class SimpleRichDoc {
     // ----- blocks -----
     const byPos = new Map<number, { id: OpId; blockType: string }>()
     for (const b of this.blocks) {
-      const pos = this.resolveAnchor(b.at, items)
       const id = oid(b.agent, b.seq)
+      if (this.deletedBlocks.has(id)) continue             // tombstoned boundary
+      const pos = this.resolveAnchor(b.at, items)
       const cur = byPos.get(pos)
       if (!cur || this.wins(cur.id, id)) byPos.set(pos, { id, blockType: b.blockType })
     }
@@ -412,9 +425,13 @@ export class SimpleRichDoc {
   ): number {
     if (s <= 0) return s
     const spanId = oid(m.agent, m.seq)
-    // boundary positions present in the doc
+    // boundary positions present in the doc (live boundaries only — tombstoned
+    // boundaries are no longer block starts and must not be included here)
     const boundaryPositions = new Set<number>()
-    for (const b of this.blocks) boundaryPositions.add(this.resolveAnchor(b.at, items))
+    for (const b of this.blocks) {
+      if (this.deletedBlocks.has(oid(b.agent, b.seq))) continue
+      boundaryPositions.add(this.resolveAnchor(b.at, items))
+    }
 
     let cur = s
     while (cur > 0) {
