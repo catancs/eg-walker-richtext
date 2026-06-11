@@ -8,7 +8,7 @@
 import seedRandom from 'seed-random'
 import assert from 'node:assert/strict'
 import { createOpLog, localInsert, localDelete, localMark, localSplitBlock,
-  mergeOplogInto, type ListOpLog } from '../src/index.js'
+  mergeOplogInto, boundaryIdsByPos, localDeleteBoundary, type ListOpLog } from '../src/index.js'
 import { checkoutRich, engineTextItemOrder } from '../src/resolve.js'
 import { SimpleRichDoc } from './simple-rich-doc.js'
 import { markPolicy } from '../src/mark-config.js'
@@ -44,16 +44,16 @@ function fuzzOnce(seed: string, opsPerRun = 60) {
     const p = pairs[ri(3)]
     const len = checkoutRich(p.oplog).text.length
     const roll = rng()
-    if (roll < 0.45 || len === 0) {                       // insert
+    if (roll < 0.42 || len === 0) {                       // insert
       const pos = ri(len + 1), ch = String.fromCharCode(97 + ri(26))
       localInsert(p.oplog, p.agent, pos, ch)
       p.oracle.insert(p.agent, p.seq, pos, ch); p.seq += 1
-    } else if (roll < 0.6) {                              // delete
+    } else if (roll < 0.55) {                             // delete
       const pos = ri(len)
       localDelete(p.oplog, p.agent, pos, 1)
       p.oracle.delete(pos)
       p.seq += 1
-    } else if (roll < 0.85) {                             // mark / negate
+    } else if (roll < 0.78) {                             // mark / negate
       const s = ri(len), e = s + 1 + ri(len - s)
       const t = MARK_TYPES[ri(MARK_TYPES.length)]
       const value = rng() < 0.25 ? null
@@ -63,10 +63,19 @@ function fuzzOnce(seed: string, opsPerRun = 60) {
       p.oracle.mark(p.agent, p.seq, s, e, t, value,
         markPolicy(t).endSide === 'before')
       p.seq += 2                                          // markStart + markEnd
-    } else if (roll < 0.95) {                             // block split
+    } else if (roll < 0.88) {                             // block split
       const pos = ri(len + 1)
       localSplitBlock(p.oplog, p.agent, pos)
       p.oracle.splitBlock(p.agent, p.seq, pos, 'paragraph'); p.seq += 1
+    } else if (roll < 0.93) {                             // merge (delete) a boundary
+      const bs = boundaryIdsByPos(p.oplog)
+      if (bs.length > 0) {
+        const b = bs[ri(bs.length)]
+        localDeleteBoundary(p.oplog, p.agent, b.id)
+        p.oracle.deleteBlock(b.id[0], b.id[1])
+        p.seq += 1
+      }
+      // bs empty -> no op on either side; seq unchanged (engine + oracle stay in sync).
     } else {                                              // random pairwise merge
       const q = pairs[ri(3)]
       if (q !== p) {
