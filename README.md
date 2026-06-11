@@ -73,7 +73,7 @@ flowchart LR
 
 ## 2. What it is
 
-A document is edited through an append-only **op log** carrying five op kinds: `ins`, `del`, `markStart`, `markEnd`, and `blockBoundary` (a mark is an open `markStart` plus a matching `markEnd` referencing it by raw `(agent, seq)`). Materializing the log yields a **resolved snapshot**:
+A document is edited through an append-only **op log** carrying six op kinds: `ins`, `del`, `markStart`, `markEnd`, `blockBoundary`, and `delBlockBoundary` (a mark is an open `markStart` plus a matching `markEnd` referencing it by raw `(agent, seq)`; `delBlockBoundary` tombstones a boundary by identity to merge two paragraphs). Materializing the log yields a **resolved snapshot**:
 
 ```ts
 interface RichSnapshot {
@@ -95,7 +95,7 @@ This describes the **final** architecture as implemented in `src/`. (The origina
 ```mermaid
 flowchart TD
     CG["<b>1. Causal graph</b><br/>immutable event graph: (agent,seq) ids + parents"]
-    OL["<b>2. Op log</b><br/>ins · del · markStart · markEnd · blockBoundary<br/>marks and blocks are zero-width anchor ops in the log"]
+    OL["<b>2. Op log</b><br/>ins · del · markStart · markEnd · blockBoundary · delBlockBoundary<br/>marks and blocks are zero-width anchor ops in the log"]
     RP["<b>3. Pure replay</b><br/>base Eg-walker / FugueMax integration<br/>anchors integrate as ZERO-WIDTH items, exactly like<br/>text inserts: no stickiness, no order-dependence<br/>(0 engine self-divergence over 1e5+ fuzz iterations)"]
     RS["<b>4. Pure resolution</b><br/>deterministic fn(items, causal graph) → spans + blocks<br/>· span start/end from each anchor's immutable originLeft<br/>· expand vs contract per mark policy<br/>· paragraph-start mark inheritance<br/>· per-position causal LWW (and multi for comments)<br/>· flat block partition"]
     SN["<b>5. Resolved snapshot</b><br/>{ text, spans, blocks }<br/>O(document), zero per-character metadata"]
@@ -182,7 +182,7 @@ Reproduce:
 
 ```sh
 npm run evidence                          # build + suite + fuzz + bench, regenerates EVIDENCE.md
-npm test                                  # 45 TAP points (44 pass, 1 expected slow-skip)
+npm test                                  # 56 TAP points (55 pass, 1 expected slow-skip)
 FUZZ_ITERS=10000 npm run fuzz:rich        # 10k-iteration differential fuzz
 ```
 

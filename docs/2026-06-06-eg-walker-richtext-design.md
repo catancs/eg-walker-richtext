@@ -107,6 +107,9 @@ type RichOp<T> =
                                                         // replica-local, never in ops
   | { type: 'blockBoundary', pos: number,
       blockType: string }                               // flat blocks (¶)
+  | { type: 'delBlockBoundary',
+      startId: [agent: string, seq: number] }           // tombstones a boundary
+                                                        // by identity (merge ¶)
 ```
 
 Operation identity and causal parents live in the causal graph (layer 1),
