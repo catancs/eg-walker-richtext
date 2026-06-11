@@ -56,15 +56,18 @@ flowchart LR
 | **Maturity** | Research / reference artifact (v1, unoptimized) <sup>7</sup> | Production library | Production library | Production library | Shipped product |
 | **Central server required?** | No (peer-to-peer capable) | No (peer-to-peer capable) | No (peer-to-peer capable) | No (peer-to-peer capable) | Effectively yes (server-coordinated) <sup>5</sup> |
 
-**Notes**
+<details>
+<summary><b>Sources and per-cell caveats</b></summary>
 
-1. **This repo:** pure replay integrates only zero-width anchor ops; all order-dependent Peritext semantics are computed by a pure resolution function at materialization. The resolved snapshot `{text, spans, blocks}` is O(document) with zero per-character CRDT metadata, the project's single headline contrast, framed as a metadata-*shape* property, not a benchmark win.
-2. **Loro:** rich text combines Fugue (a list CRDT, whose elements carry CRDT identity) with Peritext-style range annotations kept in a separate `RangeMap`. Loro is heavily compacted (run-length / columnar encoding, tombstone GC), so this is a *model-level* property, not a statement about its encoded footprint. Sources: [Loro rich-text blog](https://loro.dev/blog/loro-richtext), [loro-dev/crdt-richtext](https://github.com/loro-dev/crdt-richtext).
-3. **Yjs:** YATA represents the document as a linked list of `Item` blocks, each with an ID (client+clock) plus origin references; formatting is inline in the sequence. Source: [yjs/INTERNALS.md](https://github.com/yjs/yjs/blob/main/INTERNALS.md).
-4. **Automerge:** `Text` implements Peritext over an RGA sequence (per-element IDs); marks `(start, end, name, value)` are stored outside the text. Rich text landed in Automerge 2.2. Source: [Automerge 2.2: Rich Text](https://automerge.org/blog/rich-text/).
-5. **Google Docs / OT:** the Jupiter OT protocol with a centralized server that transforms and propagates ops; it is operational transformation, not a CRDT, and a *different lineage* that this project neither descends from nor improves on. "Effectively yes" reflects Google's deployed model, not a hard theoretical requirement of OT. Sources: [Jupiter protocol revisited](https://arxiv.org/pdf/1708.04754), [OT vs CRDT](https://arxiv.org/pdf/1905.01517).
-6. **This repo:** the durable write form is an append-only oplog (JSON in v1, no binary codec yet); the O(document) resolved snapshot is the materialized read form, distinct from the history.
-7. **This repo:** deliberately unoptimized TypeScript, explicitly a v1 reference artifact, not production-ready and not claimed to beat Yjs/Automerge on speed or encoded size (see §5 and §6).
+1. **This repo:** zero per-char metadata is a metadata-*shape* property, not a benchmark win.
+2. **Loro:** Fugue list elements carry CRDT identity; annotations live in a separate `RangeMap`. Loro is heavily compacted, so this is model-level, not a footprint claim. [blog](https://loro.dev/blog/loro-richtext), [repo](https://github.com/loro-dev/crdt-richtext).
+3. **Yjs:** YATA linked-list `Item`s with IDs + origin refs; formatting inline. [INTERNALS](https://github.com/yjs/yjs/blob/main/INTERNALS.md).
+4. **Automerge:** Peritext over an RGA sequence (per-element IDs); marks stored outside the text (since 2.2). [blog](https://automerge.org/blog/rich-text/).
+5. **Google Docs / OT:** Jupiter OT, server-coordinated; not a CRDT, and a different lineage this project neither descends from nor improves on. "Effectively yes" reflects the deployed model, not OT theory. [Jupiter](https://arxiv.org/pdf/1708.04754), [OT vs CRDT](https://arxiv.org/pdf/1905.01517).
+6. **This repo:** durable form is an append-only oplog (JSON, v1); the snapshot is the read form.
+7. **This repo:** unoptimized TS reference; not claimed to beat Yjs/Automerge on speed or size (see §5, §6).
+
+</details>
 
 ---
 
