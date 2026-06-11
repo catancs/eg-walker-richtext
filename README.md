@@ -19,13 +19,13 @@ This is, as far as I am aware, the first implementation of inline rich-text mark
 
 ---
 
-## 1. Why this exists: the gap and the refuted claim
+## 1. Why I built this
 
-**Eg-walker** (Gentle & Kleppmann, *Collaborative Text Editing with Eg-walker: Better, Faster, Smaller*, EuroSys 2025, [arXiv:2409.14252](https://arxiv.org/abs/2409.14252)) is the state of the art for collaborative **plain text**. It stores an immutable event graph of the original operations, keeps **no per-character CRDT metadata in steady state**, and rebuilds a transient CRDT structure only while merging concurrent edits. The paper lists rich text as **future work**, and no shipping implementation had it as of June 2026.
+**Eg-walker** (Gentle & Kleppmann, EuroSys 2025, [arXiv:2409.14252](https://arxiv.org/abs/2409.14252)) is the leanest way I know to do collaborative *plain* text. It keeps the original edits as an immutable event graph, carries **zero per-character metadata** at rest, and only rebuilds a throwaway CRDT while it merges. The paper left **rich text** as future work, and as of June 2026 nobody had shipped it.
 
-The team that got closest published an **infeasibility claim**. Loro's documentation and blog state (paraphrasing) that **Peritext cannot be modeled on Eg-walker**: Eg-walker's replay depends on every operation producing the *same effect regardless of document state* (state-independent replay), whereas Peritext's span resolution is fundamentally **order-dependent**. Loro therefore routed rich text onto a *separate* Fugue positional layer, paying permanent per-element CRDT metadata for all formatted text.
+The closest anyone got was Loro, and they concluded it **couldn't** be done. The argument: Peritext's formatting is inherently *order-dependent*, but Eg-walker's replay has to be *order-independent* (every op must mean the same thing no matter the document state), so the two can't mix. They put rich text on a separate Fugue layer instead, paying permanent per-element metadata for every formatted character. I didn't buy the impossibility, so I set out to build the counterexample.
 
-**The thesis of this project, in one sentence:** the claim is refuted by **decomposition**. Keep replay pure and state-independent (it only ever integrates zero-width *anchor* operations and never resolves anything), and push **all** of Peritext's order-dependent semantics into a **pure resolution function** computed at materialization. Replay never needs to be order-dependent because it never decides span membership; resolution is allowed to be order-dependent because it is a deterministic pure function of the final causal graph, computed identically on every replica.
+**The whole idea is decomposition.** Keep replay dumb: it only ever drops in zero-width *anchor* ops and never decides what anything means. Push **all** of Peritext's order-dependent logic into one **pure resolution function** that runs when you read the document. Replay stays order-independent because it never decides what a span covers; resolution is *allowed* to be order-dependent because it's a deterministic function of the finished causal graph, computed identically on every replica. The rest of this README is the evidence that it holds.
 
 ```mermaid
 flowchart LR
@@ -41,7 +41,7 @@ flowchart LR
     style MINE fill:#e8f5e9,stroke:#2c8a2c
 ```
 
-> I attribute the Loro position honestly: it is a reasonable reading of Eg-walker's replay contract, and the contribution here is showing the contract can be *satisfied* by moving the order-dependent work out of replay rather than concluding it is impossible. This repo contrasts with, and does not disparage, Loro's engineering.
+> To be fair to Loro: their reading of Eg-walker's replay contract is reasonable. The point here isn't that they were wrong to be careful, it's that the contract can be *satisfied* (by moving the order-dependent work out of replay) instead of declared impossible. A contrast with their engineering, not a knock on it.
 
 ### Where this sits: the landscape in one table
 
