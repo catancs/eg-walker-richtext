@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createOpLog, localInsert, localSplitBlock, localDeleteBoundary, mergeOplogInto,
+  boundaryIdsByPos,
 } from '../src/index.js'
 import { checkoutRich } from '../src/resolve.js'
 
@@ -16,6 +17,18 @@ test('block_merge_basic', () => {
   const s = checkoutRich(o)
   assert.equal(s.text.join(''), 'ab')
   assert.deepEqual(s.blocks, [{ start: 0, end: 2, blockType: 'paragraph' }])
+})
+
+// boundaryIdsByPos returns each live boundary's resolved gap position + raw id.
+// 'helloworld' = seqs 0..9; split@5 = seq 10; split@8 = seq 11.
+test('boundaryIdsByPos reports live boundaries with pos + id', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'helloworld')
+  localSplitBlock(o, 'o', 5)
+  localSplitBlock(o, 'o', 8)
+  assert.deepEqual(
+    boundaryIdsByPos(o).sort((a: { pos: number }, b: { pos: number }) => a.pos - b.pos),
+    [{ pos: 5, id: ['o', 10] }, { pos: 8, id: ['o', 11] }])
 })
 
 test('block_merge_concurrent_double', () => {
