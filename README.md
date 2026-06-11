@@ -205,7 +205,6 @@ This is what the model *costs*, measured honestly. Production optimization (RLE,
 **This is a v1 reference implementation and research artifact. It is not production-ready.** Honesty about limits is a feature here.
 
 **Documented v1 limitations:**
-- **Boundary-deletion is not supported** (deleting across a block boundary in the specified way).
 - The differential oracle has a carved-out **tombstone-order and equal-letter-swap variance** (above): characterized, logged, never a mark or block move.
 - The LWW per-position fold is **order-dependent in principle** for 3+ concurrent same-position spans; it is made replica-independent by folding in a canonical, replica-independent order (resolved `start`, `end`, then raw `(agent, seq)`). This is documented in `src/resolve.ts` as load-bearing for any port or oracle.
 
