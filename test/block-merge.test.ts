@@ -5,6 +5,7 @@ import {
   boundaryIdsByPos, localMergeBlock, localDeleteRange, localDelete,
 } from '../src/index.js'
 import { checkoutRich } from '../src/resolve.js'
+import { SimpleRichDoc } from './simple-rich-doc.js'
 
 // Deleting a boundary merges the two paragraphs into one (text untouched).
 // Op ids: insert 'ab' uses seqs 0,1; localSplitBlock uses seq 2 -> boundary id ['o', 2].
@@ -95,4 +96,66 @@ test('block_merge_concurrent_double', () => {
   assert.deepEqual(sa.blocks, [{ start: 0, end: 2, blockType: 'paragraph' }])
   assert.deepEqual(sa.blocks, sb.blocks, 'convergence')
   assert.equal(sa.text.join(''), 'ab')
+})
+
+// Merged block keeps the PRECEDING block's type.
+// 'helloworld'=seqs 0..9; split@0 'heading'=seq 10; split@5 'paragraph'=seq 11.
+test('block_merge_preceding_type_wins', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'helloworld')
+  localSplitBlock(o, 'o', 0, 'heading')   // first block is a heading
+  localSplitBlock(o, 'o', 5, 'paragraph')
+  assert.deepEqual(checkoutRich(o).blocks,
+    [{ start: 0, end: 5, blockType: 'heading' },
+     { start: 5, end: 10, blockType: 'paragraph' }])
+  localDeleteBoundary(o, 'o', ['o', 11])  // merge: remove the paragraph boundary
+  assert.deepEqual(checkoutRich(o).blocks,
+    [{ start: 0, end: 10, blockType: 'heading' }], 'preceding (heading) type wins')
+})
+
+// Merge + concurrent edit in a block: both apply, single merged block, converge.
+test('block_merge_concurrent_edit_converges', () => {
+  const a = createOpLog<string>(), b = createOpLog<string>()
+  localInsert(a, 'a', 0, ...'helloworld')
+  localSplitBlock(a, 'a', 5)              // boundary id ['a', 10]
+  mergeOplogInto(b, a)
+  localDeleteBoundary(a, 'a', ['a', 10])  // A merges the blocks
+  localInsert(b, 'b', 7, 'X')             // B edits concurrently
+  mergeOplogInto(a, b); mergeOplogInto(b, a)
+  const sa = checkoutRich(a), sb = checkoutRich(b)
+  assert.equal(sa.text.join(''), 'hellowoXrld')
+  assert.deepEqual(sa.blocks, sb.blocks)
+  assert.deepEqual(sa.blocks, [{ start: 0, end: 11, blockType: 'paragraph' }])
+})
+
+// Merge + a concurrent split elsewhere are independent; both survive.
+test('block_merge_vs_concurrent_split_elsewhere', () => {
+  const a = createOpLog<string>(), b = createOpLog<string>()
+  localInsert(a, 'a', 0, ...'helloworld')
+  localSplitBlock(a, 'a', 3)              // boundary id ['a', 10]
+  mergeOplogInto(b, a)
+  localDeleteBoundary(a, 'a', ['a', 10])  // A removes boundary at 3
+  localSplitBlock(b, 'b', 7)              // B splits at 7
+  mergeOplogInto(a, b); mergeOplogInto(b, a)
+  const sa = checkoutRich(a), sb = checkoutRich(b)
+  assert.deepEqual(sa.blocks, sb.blocks)
+  assert.deepEqual(sa.blocks.map(bl => [bl.start, bl.end]), [[0, 7], [7, 10]])
+})
+
+// Oracle must mirror the engine when a boundary is deleted.
+test('oracle matches engine on block merge', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'helloworld')
+  localSplitBlock(o, 'o', 5)
+  localDeleteBoundary(o, 'o', ['o', 10])
+  const eng = checkoutRich(o)
+
+  const doc = new SimpleRichDoc()
+  doc.insert('o', 0, 0, 'helloworld')     // seqs 0..9
+  doc.splitBlock('o', 10, 5, 'paragraph') // seq 10
+  doc.deleteBlock('o', 10)                // merge that boundary
+  const ora = doc.materialize()
+
+  assert.deepEqual(ora.blocks, eng.blocks)
+  assert.equal(ora.text, eng.text.join(''))
 })
