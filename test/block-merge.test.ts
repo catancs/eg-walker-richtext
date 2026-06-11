@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   createOpLog, localInsert, localSplitBlock, localDeleteBoundary, mergeOplogInto,
-  boundaryIdsByPos,
+  boundaryIdsByPos, localMergeBlock, localDeleteRange, localDelete,
 } from '../src/index.js'
 import { checkoutRich } from '../src/resolve.js'
 
@@ -29,6 +29,50 @@ test('boundaryIdsByPos reports live boundaries with pos + id', () => {
   assert.deepEqual(
     boundaryIdsByPos(o).sort((a: { pos: number }, b: { pos: number }) => a.pos - b.pos),
     [{ pos: 5, id: ['o', 10] }, { pos: 8, id: ['o', 11] }])
+})
+
+// Backspace at a paragraph start merges into the previous block.
+test('localMergeBlock merges at a boundary position', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'ab')
+  localSplitBlock(o, 'o', 1)              // a | b
+  localMergeBlock(o, 'o', 1)
+  const s = checkoutRich(o)
+  assert.equal(s.text.join(''), 'ab')
+  assert.deepEqual(s.blocks, [{ start: 0, end: 2, blockType: 'paragraph' }])
+})
+
+// No-op at doc start and when no boundary sits at pos.
+test('localMergeBlock is a no-op at doc start and off-boundary', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'ab')
+  localSplitBlock(o, 'o', 1)
+  localMergeBlock(o, 'o', 0)              // doc start: no-op
+  localMergeBlock(o, 'o', 2)              // no boundary here: no-op
+  assert.equal(checkoutRich(o).blocks.length, 2, 'both no-ops; still 2 blocks')
+})
+
+// A delete range crossing a boundary deletes the text AND merges (boundary
+// strictly inside the range). 'helloworld', split@5; delete [3,7) = 'lowo'.
+test('localDeleteRange merges a boundary strictly inside the range', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'helloworld')
+  localSplitBlock(o, 'o', 5)
+  localDeleteRange(o, 'o', 3, 4)          // deletes positions 3,4,5,6
+  const s = checkoutRich(o)
+  assert.equal(s.text.join(''), 'helrld')
+  assert.deepEqual(s.blocks, [{ start: 0, end: 6, blockType: 'paragraph' }])
+})
+
+// A boundary exactly at the range edge is NOT merged (strictly-inside rule).
+test('localDeleteRange leaves a boundary at the range edge', () => {
+  const o = createOpLog<string>()
+  localInsert(o, 'o', 0, ...'helloworld')
+  localSplitBlock(o, 'o', 5)
+  localDeleteRange(o, 'o', 5, 2)          // boundary at pos 5 == range start: kept
+  const s = checkoutRich(o)
+  assert.equal(s.text.join(''), 'hellorld')
+  assert.deepEqual(s.blocks.map(b => [b.start, b.end]), [[0, 5], [5, 8]])
 })
 
 test('block_merge_concurrent_double', () => {

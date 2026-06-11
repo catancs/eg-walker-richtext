@@ -140,6 +140,29 @@ export function localDeleteBoundary<T>(oplog: ListOpLog<T>, agent: string,
   oplog.ops.push({ type: 'delBlockBoundary', startId })
 }
 
+/** Backspace-style merge: delete the boundary at gap `pos` (merge this block
+ *  into the previous one). No-op at doc start or when no boundary sits at pos. */
+export function localMergeBlock<T>(oplog: ListOpLog<T>, agent: string, pos: number) {
+  if (pos <= 0) return
+  const b = boundaryIdsByPos(oplog).find(x => x.pos === pos)
+  if (b === undefined) return
+  localDeleteBoundary(oplog, agent, b.id)
+}
+
+/** Delete the visible text range [pos, pos+len) AND merge every boundary whose
+ *  resolved gap is STRICTLY inside (pos, pos+len). Plain text deletes skip
+ *  anchors, so boundaries are merged explicitly via their identity. */
+export function localDeleteRange<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number) {
+  if (len <= 0) throw Error('Invalid delete length')
+  // Capture inside-boundary ids BEFORE the text deletes (ids are position-
+  // independent, but the position filter must read the pre-delete layout).
+  const inside = boundaryIdsByPos(oplog)
+    .filter(b => b.pos > pos && b.pos < pos + len)
+    .map(b => b.id)
+  localDelete(oplog, agent, pos, len)
+  for (const id of inside) localDeleteBoundary(oplog, agent, id)
+}
+
 /** Add an operation to the oplog. Content is required if the operation is an insert. */
 export function pushOp<T>(oplog: ListOpLog<T>, id: causalGraph.RawVersion, parents: causalGraph.RawVersion[], type: 'ins' | 'del', pos: number, content?: T): boolean {
   const entry = causalGraph.addRaw(oplog.cg, id, 1, parents)
