@@ -67,6 +67,11 @@ export type ListOp<T = any> = {
 } | {
   // Flat block separator (¶). Right-sticky by definition (design spec §4.3).
   type: 'blockBoundary', pos: number, blockType: string
+} | {
+  // Tombstones the blockBoundary identified by startId (raw agent,seq) — i.e.
+  // merges the two adjacent paragraphs. Targets by IDENTITY, never position
+  // (mirrors markEnd.startId). Consumes one seq, like a single `del`.
+  type: 'delBlockBoundary', startId: [agent: string, seq: number]
 }
 
 export type ItemKind = 'text' | 'markStart' | 'markEnd' | 'blockBoundary'
@@ -123,6 +128,16 @@ export function localSplitBlock<T>(oplog: ListOpLog<T>, agent: string,
   const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
   causalGraph.add(oplog.cg, agent, seq, seq + 1, oplog.cg.heads)
   oplog.ops.push({ type: 'blockBoundary', pos, blockType })
+}
+
+/** Merge the two paragraphs around a boundary by tombstoning it. Targets the
+ *  boundary by its raw (agent,seq) identity. Low-level primitive; prefer
+ *  localMergeBlock / localDeleteRange for position-based editing. */
+export function localDeleteBoundary<T>(oplog: ListOpLog<T>, agent: string,
+    startId: [agent: string, seq: number]) {
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq + 1, oplog.cg.heads)
+  oplog.ops.push({ type: 'delBlockBoundary', startId })
 }
 
 /** Add an operation to the oplog. Content is required if the operation is an insert. */
@@ -242,17 +257,16 @@ interface EditContext {
 function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
 
-  // For inserts, the item being reactivated is just the op itself. For deletes,
-  // we need to look up the item in delTargets.
-  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
+  // delBlockBoundary is a delete (of a boundary item) — same state machine as `del`.
+  const isDel = op.type === 'del' || op.type === 'delBlockBoundary'
+  const targetLV = isDel ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
 
-  if (op.type === 'del') {
+  if (isDel) {
     assert(item.curState >= ItemState.Inserted, 'Invalid state - adv Del but item is ' + item.curState)
     assert(item.endState >= ItemState.Deleted, 'Advance delete with item not deleted in endState')
     item.curState++
   } else {
-    // Mark the item as inserted.
     assertEq(item.curState, ItemState.NotYetInserted, 'Advance insert for already inserted item ' + opId)
     item.curState = ItemState.Inserted
   }
@@ -260,15 +274,14 @@ function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
 
 function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
-  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
+  const isDel = op.type === 'del' || op.type === 'delBlockBoundary'
+  const targetLV = isDel ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
 
-  if (op.type === 'del') {
-    // Undelete the item.
+  if (isDel) {
     assert(item.curState >= ItemState.Deleted, 'Retreat delete but item not currently deleted')
     assert(item.endState >= ItemState.Deleted, 'Retreat delete but item not deleted')
   } else {
-    // Un-insert this item.
     assertEq(item.curState, ItemState.Inserted, 'Retreat insert for item not in inserted state')
   }
 
@@ -415,6 +428,19 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
 
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[opId] = item.opId
+  } else if (op.type === 'delBlockBoundary') {
+    // Identity-targeted delete of a zero-width boundary. No findByCurPos walk,
+    // no snapshot splice (anchors contribute no width).
+    const targetLV = causalGraph.rawToLV(oplog.cg, op.startId[0], op.startId[1])
+    const item = ctx.itemsByLV[targetLV]
+    assert(item != null && item.kind === 'blockBoundary',
+      'delBlockBoundary target is not a live boundary item')
+    // Concurrent double-merge is fine: retreat/advance restore curState to
+    // Inserted before each apply, exactly as for text `del` (index.ts:411-413).
+    assert(item.curState === ItemState.Inserted,
+      'delBlockBoundary target not currently Inserted')
+    item.curState = item.endState = ItemState.Deleted
+    ctx.delTargets[opId] = targetLV
   } else {
     // ins | markStart | markEnd | blockBoundary all integrate as items.
     // (Anchor items are zero-width; only text contributes document width.)
