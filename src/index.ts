@@ -667,6 +667,36 @@ export function checkoutWithItems<T>(oplog: ListOpLog<T>):
   return { snapshot, items: ctx.items, delTargets: ctx.delTargets, version: oplog.cg.heads.slice() }
 }
 
+/** Live block boundaries with their resolved gap position and raw (agent,seq)
+ *  identity. LOCAL convenience for position-based merge helpers — NOT part of
+ *  the persistent RichSnapshot. Parallels the boundary resolution in
+ *  resolve.ts: a boundary resolves to the gap immediately right of its
+ *  originLeft char (0 at doc start). */
+export function boundaryIdsByPos<T>(oplog: ListOpLog<T>):
+    { pos: number, id: [string, number] }[] {
+  const { items } = checkoutWithItems(oplog)
+  const visAfter = new Map<number, number>()
+  const live: { originLeft: number, id: [string, number] }[] = []
+  let pos = 0
+  for (const it of items) {
+    if (it.opId >= oplog.ops.length) continue           // merge placeholder
+    if (it.kind === 'text') {
+      if (it.endState === ItemState.Inserted) pos++
+      visAfter.set(it.opId, pos)
+      continue
+    }
+    visAfter.set(it.opId, pos)
+    if (it.endState !== ItemState.Inserted) continue     // tombstoned anchor
+    if (it.kind === 'blockBoundary') {
+      live.push({ originLeft: it.originLeft, id: causalGraph.lvToRaw(oplog.cg, it.opId) as [string, number] })
+    }
+  }
+  return live.map(b => ({
+    pos: b.originLeft === -1 ? 0 : (visAfter.get(b.originLeft) ?? 0),
+    id: b.id,
+  }))
+}
+
 export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
   return checkout(oplog).snapshot
 }
