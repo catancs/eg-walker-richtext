@@ -119,7 +119,7 @@ The key move: **replay places anchors but never interprets them.** A `markStart`
 ```ts
 // Reference artifact: import from the source modules (no npm package / exports map).
 import {
-  createOpLog, localInsert, localMark, localSplitBlock, mergeOplogInto,
+  createOpLog, localInsert, localMark, localSplitBlock, localMergeBlock, mergeOplogInto,
 } from './src/index.js'
 import { checkoutRich } from './src/resolve.js'
 
@@ -146,6 +146,17 @@ console.log(snap.spans)
 console.log(snap.blocks)
 //  [ { start: 0,  end: 17, blockType: 'paragraph' },
 //    { start: 17, end: 25, blockType: 'paragraph' } ]
+
+// Alice merges the two paragraphs back into one by deleting the boundary
+// (a backspace at the paragraph start). Merging is a v1 capability: the
+// delBlockBoundary op tombstones the boundary by identity, resolution drops
+// it, and the following text rejoins the preceding block.
+localMergeBlock(a, 'alice', 17)
+mergeOplogInto(b, a)                       // both replicas still converge
+
+console.log(checkoutRich(a).blocks)
+//  [ { start: 0, end: 25, blockType: 'paragraph' } ]   // one paragraph again
+//  (text and spans are unchanged; only the block partition merges)
 ```
 
 (I run and verify this exact example during development; the output above is its real output.)
