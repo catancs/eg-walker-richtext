@@ -267,6 +267,7 @@ function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
     assert(item.endState >= ItemState.Deleted, 'Advance delete with item not deleted in endState')
     item.curState++
   } else {
+    // Mark the item as inserted.
     assertEq(item.curState, ItemState.NotYetInserted, 'Advance insert for already inserted item ' + opId)
     item.curState = ItemState.Inserted
   }
@@ -282,6 +283,7 @@ function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
     assert(item.curState >= ItemState.Deleted, 'Retreat delete but item not currently deleted')
     assert(item.endState >= ItemState.Deleted, 'Retreat delete but item not deleted')
   } else {
+    // Un-insert this item.
     assertEq(item.curState, ItemState.Inserted, 'Retreat insert for item not in inserted state')
   }
 

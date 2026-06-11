@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  createOpLog, localInsert, localSplitBlock, localDeleteBoundary,
+  createOpLog, localInsert, localSplitBlock, localDeleteBoundary, mergeOplogInto,
 } from '../src/index.js'
 import { checkoutRich } from '../src/resolve.js'
 
@@ -16,4 +16,26 @@ test('block_merge_basic', () => {
   const s = checkoutRich(o)
   assert.equal(s.text.join(''), 'ab')
   assert.deepEqual(s.blocks, [{ start: 0, end: 2, blockType: 'paragraph' }])
+})
+
+test('block_merge_concurrent_double', () => {
+  // Two peers both delete the same boundary concurrently; result must converge.
+  const a = createOpLog<string>()
+  localInsert(a, 'a', 0, ...'ab')
+  localSplitBlock(a, 'a', 1)             // boundary ['a', 2]
+
+  const b = createOpLog<string>()
+  mergeOplogInto(b, a)
+
+  localDeleteBoundary(a, 'a', ['a', 2])  // peer A merges
+  localDeleteBoundary(b, 'b', ['a', 2])  // peer B merges concurrently
+
+  mergeOplogInto(a, b)
+  mergeOplogInto(b, a)
+
+  const sa = checkoutRich(a)
+  const sb = checkoutRich(b)
+  assert.deepEqual(sa.blocks, [{ start: 0, end: 2, blockType: 'paragraph' }])
+  assert.deepEqual(sa.blocks, sb.blocks, 'convergence')
+  assert.equal(sa.text.join(''), 'ab')
 })
