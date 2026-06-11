@@ -41,9 +41,10 @@ test('block_same_position_split', () => {
   assert.deepEqual(sa.blocks, checkoutRich(b).blocks)
 })
 
-// Design spec §4.3: v1 has no boundary-deletion op (del skips anchors). This
-// test documents honest v1 semantics: delete ALL text around a boundary ->
-// boundary persists, blocks collapse to a single empty block.
+// Plain `localDelete` deliberately skips anchors (it only tombstones text), so
+// deleting all text around a boundary leaves the boundary in place -> a single
+// empty block. Merging a boundary is a SEPARATE op (delBlockBoundary /
+// localMergeBlock / localDeleteRange); see block-merge.test.ts.
 test('block_merge_vs_edit_v1_semantics', () => {
   const o = createOpLog<string>()
   localInsert(o, 'o', 0, ...'ab')
