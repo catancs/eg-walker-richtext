@@ -107,6 +107,9 @@ type RichOp<T> =
                                                         // replica-local, never in ops
   | { type: 'blockBoundary', pos: number,
       blockType: string }                               // flat blocks (¶)
+  | { type: 'delBlockBoundary',
+      startId: [agent: string, seq: number] }           // tombstones a boundary
+                                                        // by identity (merge ¶)
 ```
 
 Operation identity and causal parents live in the causal graph (layer 1),
@@ -159,7 +162,10 @@ implicit boundaries). Consequences, all inherited from sequence semantics:
   ordinary concurrent sequence ops (FugueMax decides order; text lands in the
   block its position implies).
 - **Merge paragraphs** = delete a boundary. Concurrent merge + edit: the edit
-  survives; the boundary's tombstone is invisible.
+  survives; the boundary's tombstone is invisible. This is now implemented: the
+  `delBlockBoundary` op tombstones a boundary by identity (helpers
+  `localMergeBlock` / `localDeleteRange`), and resolution drops the tombstoned
+  boundary so the following text joins the preceding block.
 - **Concurrent identical split** (two users split at the same position): two
   adjacent boundaries → one empty block between them. Policy: empty blocks
   produced this way are collapsed at resolution (layer 4), with the surviving

@@ -16,12 +16,12 @@ npm run evidence            # builds, runs suite + fuzzer + benchmark, rewrites 
 
 | Field | Value |
 | --- | --- |
-| Git SHA | `a7bd812ab47e36ca508b3a9abfb81f60834f86dd` |
-| Git branch | `main` |
+| Git SHA | `8c3b1f261f6ddd469254b00114a934abff1e77a0` |
+| Git branch | `feat/boundary-deletion` |
 | Node | v25.8.1 |
 | Platform | darwin / arm64 |
 | CPU | Apple M4 |
-| Generated (UTC) | 2026-06-08T06:59:10.718Z |
+| Generated (UTC) | 2026-06-11T13:32:51.624Z |
 | Fuzz iterations / seed | 5000 |
 | Fuzz seed bases | evidence-1, evidence-2, evidence-3 |
 
@@ -47,7 +47,7 @@ Command:
 node --test --test-reporter=tap "dist/test/**/*.test.js"
 ```
 
-**Totals: 44 pass / 0 fail / 1 skip** (of 45 TAP points).
+**Totals: 55 pass / 0 fail / 1 skip** (of 56 TAP points).
 
 Citation-named tests (`peritext_*`, `yjs_*`, `block_*`) are the "claims = test names" evidence — each is a named published failure case or semantic obligation.
 
@@ -80,6 +80,22 @@ Citation-named tests (`peritext_*`, `yjs_*`, `block_*`) are the "claims = test n
 | Test | Citation | Result |
 | --- | --- | --- |
 | `block_paragraph_start_concurrent_convergence (fuzzer seed egwrt-1-0)` | ★ | ✅ PASS |
+
+### `block-merge.test.ts`
+
+| Test | Citation | Result |
+| --- | --- | --- |
+| `block_merge_basic` | ★ | ✅ PASS |
+| `boundaryIdsByPos reports live boundaries with pos + id` |  | ✅ PASS |
+| `localMergeBlock merges at a boundary position` |  | ✅ PASS |
+| `localMergeBlock is a no-op at doc start and off-boundary` |  | ✅ PASS |
+| `localDeleteRange merges a boundary strictly inside the range` |  | ✅ PASS |
+| `localDeleteRange leaves a boundary at the range edge` |  | ✅ PASS |
+| `block_merge_concurrent_double` | ★ | ✅ PASS |
+| `block_merge_preceding_type_wins` | ★ | ✅ PASS |
+| `block_merge_concurrent_edit_converges` | ★ | ✅ PASS |
+| `block_merge_vs_concurrent_split_elsewhere` | ★ | ✅ PASS |
+| `oracle matches engine on block merge` |  | ✅ PASS |
 
 ### `blocks.test.ts`
 
@@ -145,9 +161,9 @@ FUZZ_ITERS=5000 FUZZ_SEED=<seed-base> node dist/test/rich-fuzzer.js
 
 | Seed base | Iterations | Engine self-converged | Visible-text variant | Item-order variant | Carved span/block variance | Result |
 | --- | --- | --- | --- | --- | --- | --- |
-| `evidence-1` | 5000 | ✅ 5000/5000 | 21/5000 (0.420%) | 3/5000 (0.060%) | 1/5000 (0.020%) | ✅ PASS |
-| `evidence-2` | 5000 | ✅ 5000/5000 | 13/5000 (0.260%) | 4/5000 (0.080%) | 1/5000 (0.020%) | ✅ PASS |
-| `evidence-3` | 5000 | ✅ 5000/5000 | 25/5000 (0.500%) | 2/5000 (0.040%) | 0/5000 (0.000%) | ✅ PASS |
+| `evidence-1` | 5000 | ✅ 5000/5000 | 37/5000 (0.740%) | 10/5000 (0.200%) | 1/5000 (0.020%) | ✅ PASS |
+| `evidence-2` | 5000 | ✅ 5000/5000 | 30/5000 (0.600%) | 2/5000 (0.040%) | 1/5000 (0.020%) | ✅ PASS |
+| `evidence-3` | 5000 | ✅ 5000/5000 | 51/5000 (1.020%) | 12/5000 (0.240%) | 3/5000 (0.060%) | ✅ PASS |
 
 **Honest claim:** 0 unclassified mark-resolution divergences; the engine self-converged on N/N iterations for every seed base; the only carve-out is the precisely-characterized tombstone-order / equal-letter-swap variance of the side-table oracle (rates above), each instance of which is logged and is a known text-CRDT-ordering difference — never a mark or block bug.
 
@@ -205,4 +221,4 @@ Tune the fuzz count with `EVIDENCE_FUZZ_ITERS` and seed bases with `EVIDENCE_FUZ
 
 ---
 
-_Generated 2026-06-08T06:59:10.718Z from `a7bd812ab47e36ca508b3a9abfb81f60834f86dd`._
+_Generated 2026-06-11T13:32:51.624Z from `8c3b1f261f6ddd469254b00114a934abff1e77a0`._

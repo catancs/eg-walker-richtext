@@ -67,6 +67,11 @@ export type ListOp<T = any> = {
 } | {
   // Flat block separator (¶). Right-sticky by definition (design spec §4.3).
   type: 'blockBoundary', pos: number, blockType: string
+} | {
+  // Tombstones the blockBoundary identified by startId (raw agent,seq) — i.e.
+  // merges the two adjacent paragraphs. Targets by IDENTITY, never position
+  // (mirrors markEnd.startId). Consumes one seq, like a single `del`.
+  type: 'delBlockBoundary', startId: [agent: string, seq: number]
 }
 
 export type ItemKind = 'text' | 'markStart' | 'markEnd' | 'blockBoundary'
@@ -123,6 +128,39 @@ export function localSplitBlock<T>(oplog: ListOpLog<T>, agent: string,
   const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
   causalGraph.add(oplog.cg, agent, seq, seq + 1, oplog.cg.heads)
   oplog.ops.push({ type: 'blockBoundary', pos, blockType })
+}
+
+/** Merge the two paragraphs around a boundary by tombstoning it. Targets the
+ *  boundary by its raw (agent,seq) identity. Low-level primitive; prefer
+ *  localMergeBlock / localDeleteRange for position-based editing. */
+export function localDeleteBoundary<T>(oplog: ListOpLog<T>, agent: string,
+    startId: [agent: string, seq: number]) {
+  const seq = causalGraph.nextSeqForAgent(oplog.cg, agent)
+  causalGraph.add(oplog.cg, agent, seq, seq + 1, oplog.cg.heads)
+  oplog.ops.push({ type: 'delBlockBoundary', startId })
+}
+
+/** Backspace-style merge: delete the boundary at gap `pos` (merge this block
+ *  into the previous one). No-op at doc start or when no boundary sits at pos. */
+export function localMergeBlock<T>(oplog: ListOpLog<T>, agent: string, pos: number) {
+  if (pos <= 0) return
+  const b = boundaryIdsByPos(oplog).find(x => x.pos === pos)
+  if (b === undefined) return
+  localDeleteBoundary(oplog, agent, b.id)
+}
+
+/** Delete the visible text range [pos, pos+len) AND merge every boundary whose
+ *  resolved gap is STRICTLY inside (pos, pos+len). Plain text deletes skip
+ *  anchors, so boundaries are merged explicitly via their identity. */
+export function localDeleteRange<T>(oplog: ListOpLog<T>, agent: string, pos: number, len: number) {
+  if (len <= 0) throw Error('Invalid delete length')
+  // Capture inside-boundary ids BEFORE the text deletes (ids are position-
+  // independent, but the position filter must read the pre-delete layout).
+  const inside = boundaryIdsByPos(oplog)
+    .filter(b => b.pos > pos && b.pos < pos + len)
+    .map(b => b.id)
+  localDelete(oplog, agent, pos, len)
+  for (const id of inside) localDeleteBoundary(oplog, agent, id)
 }
 
 /** Add an operation to the oplog. Content is required if the operation is an insert. */
@@ -242,12 +280,12 @@ interface EditContext {
 function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
 
-  // For inserts, the item being reactivated is just the op itself. For deletes,
-  // we need to look up the item in delTargets.
-  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
+  // delBlockBoundary is a delete (of a boundary item) — same state machine as `del`.
+  const isDel = op.type === 'del' || op.type === 'delBlockBoundary'
+  const targetLV = isDel ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
 
-  if (op.type === 'del') {
+  if (isDel) {
     assert(item.curState >= ItemState.Inserted, 'Invalid state - adv Del but item is ' + item.curState)
     assert(item.endState >= ItemState.Deleted, 'Advance delete with item not deleted in endState')
     item.curState++
@@ -260,11 +298,11 @@ function advance1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
 
 function retreat1<T>(ctx: EditContext, oplog: ListOpLog<T>, opId: number) {
   const op = oplog.ops[opId]
-  const targetLV = op.type === 'del' ? ctx.delTargets[opId] : opId
+  const isDel = op.type === 'del' || op.type === 'delBlockBoundary'
+  const targetLV = isDel ? ctx.delTargets[opId] : opId
   const item = ctx.itemsByLV[targetLV]
 
-  if (op.type === 'del') {
-    // Undelete the item.
+  if (isDel) {
     assert(item.curState >= ItemState.Deleted, 'Retreat delete but item not currently deleted')
     assert(item.endState >= ItemState.Deleted, 'Retreat delete but item not deleted')
   } else {
@@ -415,6 +453,19 @@ function apply1<T>(ctx: EditContext, snapshot: T[] | null, oplog: ListOpLog<T>, 
 
     // And mark that this delete corresponds to *that* item.
     ctx.delTargets[opId] = item.opId
+  } else if (op.type === 'delBlockBoundary') {
+    // Identity-targeted delete of a zero-width boundary. No findByCurPos walk,
+    // no snapshot splice (anchors contribute no width).
+    const targetLV = causalGraph.rawToLV(oplog.cg, op.startId[0], op.startId[1])
+    const item = ctx.itemsByLV[targetLV]
+    assert(item != null && item.kind === 'blockBoundary',
+      'delBlockBoundary target is not a live boundary item')
+    // Concurrent double-merge is fine: retreat/advance restore curState to
+    // Inserted before each apply, exactly as for text `del` (index.ts:411-413).
+    assert(item.curState === ItemState.Inserted,
+      'delBlockBoundary target not currently Inserted')
+    item.curState = item.endState = ItemState.Deleted
+    ctx.delTargets[opId] = targetLV
   } else {
     // ins | markStart | markEnd | blockBoundary all integrate as items.
     // (Anchor items are zero-width; only text contributes document width.)
@@ -637,6 +688,36 @@ export function checkoutWithItems<T>(oplog: ListOpLog<T>):
   // by resolve.ts to determine which chars were ALREADY DELETED at a mark op's
   // creation time (so span-end resolution skips them when finding char[end]).
   return { snapshot, items: ctx.items, delTargets: ctx.delTargets, version: oplog.cg.heads.slice() }
+}
+
+/** Live block boundaries with their resolved gap position and raw (agent,seq)
+ *  identity. LOCAL convenience for position-based merge helpers — NOT part of
+ *  the persistent RichSnapshot. Parallels the boundary resolution in
+ *  resolve.ts: a boundary resolves to the gap immediately right of its
+ *  originLeft char (0 at doc start). */
+export function boundaryIdsByPos<T>(oplog: ListOpLog<T>):
+    { pos: number, id: [string, number] }[] {
+  const { items } = checkoutWithItems(oplog)
+  const visAfter = new Map<number, number>()
+  const live: { originLeft: number, id: [string, number] }[] = []
+  let pos = 0
+  for (const it of items) {
+    if (it.opId >= oplog.ops.length) continue           // merge placeholder
+    if (it.kind === 'text') {
+      if (it.endState === ItemState.Inserted) pos++
+      visAfter.set(it.opId, pos)
+      continue
+    }
+    visAfter.set(it.opId, pos)
+    if (it.endState !== ItemState.Inserted) continue     // tombstoned anchor
+    if (it.kind === 'blockBoundary') {
+      live.push({ originLeft: it.originLeft, id: causalGraph.lvToRaw(oplog.cg, it.opId) as [string, number] })
+    }
+  }
+  return live.map(b => ({
+    pos: b.originLeft === -1 ? 0 : (visAfter.get(b.originLeft) ?? 0),
+    id: b.id,
+  }))
 }
 
 export function checkoutSimple<T>(oplog: ListOpLog<T>): T[] {
